@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lua:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "5.4"
+      - uses: leafo/gh-actions-luarocks@v4
+      - run: luarocks install busted && luarocks install luacheck
+      - run: luacheck src spec
+      - run: busted
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m unittest discover -s tests -v
+
+  install:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: command -v shellcheck || brew install shellcheck
+      - run: shellcheck install.sh uninstall.sh tests/test_install.sh
+      - run: tests/test_install.sh

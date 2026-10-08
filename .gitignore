@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.wav
+*.aiff
+# personal dictionaries never belong in the repo; dictionary.example.json does
+deepgram-dictionary.json
+.env
+.luarocks/
+.lua/

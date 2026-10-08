@@ -1,0 +1,11 @@
+{
+  "keyterms": [
+    "Hammerspoon",
+    "Deepgram",
+    "Kubernetes"
+  ],
+  "replacements": [
+    { "from": "btw", "to": "by the way" },
+    { "from": "my email address", "to": "you@example.com" }
+  ]
+}
