@@ -227,6 +227,27 @@ function core.extractTranscript(resp)
   return text
 end
 
+-- Peak level (0..1) of 16-bit little-endian PCM WAV data with a 44-byte header, or nil.
+function core.wavPeak(data)
+  if type(data) ~= "string" or #data < 46 or data:sub(1, 4) ~= "RIFF" then return nil end
+  local peak = 0
+  for i = 45, #data - 1, 2 do
+    local sample = math.abs(string.unpack("<i2", data, i))
+    if sample > peak then peak = sample end
+  end
+  return peak / 32768
+end
+
+-- Explains a "No speech detected" result when the microphone looks like the cause.
+-- `peak` is 0..1 (or nil), `volume` the input volume in percent (or nil).
+function core.noSpeechHint(deviceName, volume, peak)
+  local quiet = peak and peak < 0.03
+  if not quiet then return nil end
+  local hint = string.format("Mic level very low (%s", deviceName or "input")
+  if volume and volume < 60 then hint = hint .. string.format(", input volume %d%%", math.floor(volume + 0.5)) end
+  return hint .. "). Check System Settings → Sound → Input."
+end
+
 -- Whether a recording that lasted `duration` seconds should be sent for transcription.
 function core.shouldTranscribe(duration, cancelled, minSeconds)
   return not cancelled and duration >= minSeconds

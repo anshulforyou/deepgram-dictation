@@ -89,6 +89,17 @@ local function transcribe()
   end)
 end
 
+-- "No speech detected", plus a hint when the recording was nearly silent (e.g. a quiet AirPods mic).
+local function alertNoSpeech()
+  local f = io.open(audioPath, "rb")
+  local peak = f and core.wavPeak(f:read("a"))
+  if f then f:close() end
+  local device = hs.audiodevice.defaultInputDevice()
+  local hint = core.noSpeechHint(device and device:name(), device and device:inputVolume(), peak)
+  if hint then log("no speech: %s (peak %.4f)", hint, peak) end
+  hs.alert.show("No speech detected" .. (hint and ("\n" .. hint) or ""), hint and 5 or 1)
+end
+
 local function finishStreaming(stdout, dict)
   if not sendOnExit then
     os.remove(audioPath)
@@ -99,10 +110,9 @@ local function finishStreaming(stdout, dict)
   result = ok and type(result) == "table" and result or {}
   if type(result.transcript) == "string" then
     setIndicator(nil)
+    if result.transcript == "" then alertNoSpeech() end
     os.remove(audioPath)
-    if result.transcript == "" then
-      hs.alert.show("No speech detected", 1)
-    else
+    if result.transcript ~= "" then
       pasteText(core.applyReplacements(result.transcript, dict.replacements))
     end
   else

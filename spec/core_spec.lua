@@ -377,3 +377,38 @@ describe("newEndTracker", function()
     assert.is_true(ended(false, 75))
   end)
 end)
+
+describe("wavPeak", function()
+  local function wav(samples)
+    local body = {}
+    for _, v in ipairs(samples) do table.insert(body, string.pack("<i2", v)) end
+    return "RIFF" .. string.rep("\0", 40) .. table.concat(body)
+  end
+
+  it("returns the loudest sample as a fraction of full scale", function()
+    assert.are.equal(0.5, core.wavPeak(wav({ 100, -16384, 2000 })))
+    assert.are.equal(0, core.wavPeak(wav({ 0, 0 })))
+  end)
+
+  it("rejects non-WAV input", function()
+    assert.is_nil(core.wavPeak("nope"))
+    assert.is_nil(core.wavPeak(nil))
+  end)
+end)
+
+describe("noSpeechHint", function()
+  it("mentions a low input volume when the recording was quiet", function()
+    assert.are.equal("Mic level very low (AirPods Pro, input volume 27%). Check System Settings → Sound → Input.",
+      core.noSpeechHint("AirPods Pro", 27.45, 0.0136))
+  end)
+
+  it("omits the volume when it is reasonable", function()
+    assert.are.equal("Mic level very low (MacBook Pro Microphone). Check System Settings → Sound → Input.",
+      core.noSpeechHint("MacBook Pro Microphone", 80, 0.01))
+  end)
+
+  it("gives no hint when the mic level was fine or unknown", function()
+    assert.is_nil(core.noSpeechHint("AirPods Pro", 27, 0.4))
+    assert.is_nil(core.noSpeechHint("AirPods Pro", 27, nil))
+  end)
+end)
