@@ -22,6 +22,9 @@ All notable changes to this project are documented here. The format follows
 - Optional organizing with Claude (Claude Code CLI): title, summary and action items, filed into
   topic folders with a `meetings.md` index per folder.
 - `⌃⌥⌘D` opens the menu at the mouse pointer, for when the menu bar icon is hidden.
+- Dictation streams audio to Deepgram's live API while the key is held: text arrives ~0.5 s after
+  release instead of ~2.5-3.5 s. Falls back to uploading the recording if streaming fails.
+  `streaming = false` restores the old behaviour.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
   `keepMeetingAudio`, `recorderApp`, `python`, `detectMeetings`, `autoStopMeetings`,
   `menuHotkey`, `organizeWithClaude`, `claudePath`, `claudeModel`.

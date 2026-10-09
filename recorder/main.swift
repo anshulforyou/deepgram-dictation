@@ -368,11 +368,234 @@ func printMicUsers() {
     FileHandle.standardOutput.write(Data("\n".utf8))
 }
 
+// MARK: - Streaming dictation
+
+/// Streams the microphone (via sox `rec`) to Deepgram's live API while the user speaks, so the
+/// transcript is ready almost as soon as they stop. Run directly (not via `open`) so it shares
+/// Hammerspoon's microphone permission.
+///
+///   DeepgramRecorder --stream --rec <path to rec> --url <wss://...> [--save <file.wav>]
+///   (API key in the DEEPGRAM_API_KEY environment variable)
+///
+/// SIGINT: stop recording, flush, and print {"transcript": "..."} (or {"error": ..., "audio": ...}).
+/// SIGTERM: cancel immediately and print nothing.
+final class StreamSession {
+    private let recPath: String
+    private let url: URL
+    private let apiKey: String
+    private let saveURL: URL?
+    private let queue = DispatchQueue(label: "stream")
+    private var rec: Process?
+    private var socket: URLSessionWebSocketTask?
+    private var saveHandle: FileHandle?
+    private var savedBytes = 0
+    private var finals: [String] = []
+    private var transcribedUntil = 0.0   // end time (s) of the latest final result
+    private var audioSeconds: Double?    // total audio sent, known once recording stops
+    private var socketError: String?
+    private var stopping = false
+    private var finished = false
+    private var signalSources: [DispatchSourceSignal] = []
+
+    init(recPath: String, url: URL, apiKey: String, saveURL: URL?) {
+        self.recPath = recPath
+        self.url = url
+        self.apiKey = apiKey
+        self.saveURL = saveURL
+    }
+
+    func start() {
+        installSignalHandlers()
+        if let saveURL {
+            FileManager.default.createFile(atPath: saveURL.path, contents: Self.wavHeader(dataBytes: 0))
+            saveHandle = try? FileHandle(forWritingTo: saveURL)
+            saveHandle?.seekToEndOfFile()
+        }
+
+        var request = URLRequest(url: url)
+        request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
+        let socket = URLSession.shared.webSocketTask(with: request)
+        self.socket = socket
+        socket.resume()
+        receive()
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: recPath)
+        process.arguments = ["-q", "-t", "raw", "-r", "16000", "-e", "signed", "-b", "16", "-c", "1", "-"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard let self else { return }
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                self.queue.async { self.audioEnded() }
+            } else {
+                self.queue.async { self.sendAudio(data) }
+            }
+        }
+        do {
+            try process.run()
+            rec = process
+        } catch {
+            output(["error": "could not start rec: \(error.localizedDescription)"])
+        }
+    }
+
+    private func sendAudio(_ data: Data) {
+        saveHandle?.write(data)
+        savedBytes += data.count
+        socket?.send(.data(data)) { [weak self] error in
+            guard let self, let error else { return }
+            self.queue.async { if self.socketError == nil { self.socketError = error.localizedDescription } }
+        }
+    }
+
+    private func receive() {
+        socket?.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.queue.async {
+                    if self.socketError == nil { self.socketError = error.localizedDescription }
+                    if self.stopping { self.finish() }
+                }
+            case .success(let message):
+                if case .string(let text) = message { self.queue.async { self.handle(text) } }
+                self.receive()
+            }
+        }
+    }
+
+    private func handle(_ text: String) {
+        guard let json = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else { return }
+        if ProcessInfo.processInfo.environment["DEEPGRAM_STREAM_DEBUG"] != nil {
+            let alt = ((json["channel"] as? [String: Any])?["alternatives"] as? [[String: Any]])?.first
+            FileHandle.standardError.write(Data(String(format: "%.3f %@ final=%@ fin=%@ start=%@ dur=%@ %@\n",
+                Date().timeIntervalSince1970, "\(json["type"] ?? "")", "\(json["is_final"] ?? "")",
+                "\(json["from_finalize"] ?? "")", "\(json["start"] ?? "")", "\(json["duration"] ?? "")",
+                "\(alt?["transcript"] ?? "")").utf8))
+        }
+        // Deepgram sends Metadata last, after flushing every result, when we close the stream.
+        if json["type"] as? String == "Metadata", stopping { return finish() }
+        guard json["type"] as? String == "Results" else { return }
+        let channel = json["channel"] as? [String: Any]
+        let alternatives = channel?["alternatives"] as? [[String: Any]]
+        guard json["is_final"] as? Bool == true else { return }
+        if let transcript = alternatives?.first?["transcript"] as? String, !transcript.isEmpty {
+            finals.append(transcript)
+        }
+        if let start = json["start"] as? Double, let duration = json["duration"] as? Double {
+            transcribedUntil = max(transcribedUntil, start + duration)
+        }
+        // Done once results cover all the audio we sent (Finalize can answer before Deepgram has
+        // processed audio that arrived in a burst, so its reply alone isn't enough).
+        if let audioSeconds, transcribedUntil >= audioSeconds - 0.1 { finish() }
+    }
+
+    /// The recorder has exited and all audio has been sent: ask Deepgram for the remaining results.
+    private func audioEnded() {
+        guard stopping, !finished else { return }
+        if socketError != nil { return finish() }
+        audioSeconds = Double(savedBytes) / 32000
+        if transcribedUntil >= audioSeconds! - 0.1 { return finish() }
+        socket?.send(.string(#"{"type":"Finalize"}"#)) { _ in }
+        // Backup: CloseStream makes Deepgram flush everything, send Metadata and close.
+        queue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, !self.finished else { return }
+            self.socket?.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
+        }
+        queue.asyncAfter(deadline: .now() + 6) { [weak self] in self?.finish() } // last resort
+    }
+
+    private func finish() {
+        guard !finished else { return }
+        finished = true
+        if let saveHandle {
+            saveHandle.seek(toFileOffset: 0)
+            saveHandle.write(Self.wavHeader(dataBytes: savedBytes))
+            try? saveHandle.close()
+        }
+        socket?.cancel(with: .normalClosure, reason: nil)
+        if let socketError, finals.isEmpty {
+            output(["error": socketError, "audio": saveURL?.path ?? NSNull()])
+        } else {
+            output(["transcript": finals.joined(separator: " ")])
+        }
+    }
+
+    private func output(_ object: [String: Any]) {
+        if let data = try? JSONSerialization.data(withJSONObject: object) {
+            FileHandle.standardOutput.write(data)
+            FileHandle.standardOutput.write(Data("\n".utf8))
+        }
+        exit(0)
+    }
+
+    private func installSignalHandlers() {
+        for sig in [SIGINT, SIGTERM] {
+            signal(sig, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
+            source.setEventHandler { [weak self] in
+                guard let self else { return }
+                if sig == SIGTERM {
+                    self.rec?.terminate()
+                    exit(0)
+                }
+                self.stopping = true
+                if let rec = self.rec, rec.isRunning {
+                    rec.interrupt() // sox flushes and exits; the pipe's EOF triggers audioEnded()
+                } else {
+                    self.audioEnded()
+                }
+            }
+            source.resume()
+            signalSources.append(source)
+        }
+    }
+
+    /// 44-byte header for 16 kHz mono 16-bit PCM.
+    static func wavHeader(dataBytes: Int) -> Data {
+        var header = Data()
+        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) } }
+        header.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + dataBytes))
+        header.append(contentsOf: Array("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))
+        append(UInt32(16000)); append(UInt32(32000)); append(UInt16(2)); append(UInt16(16))
+        header.append(contentsOf: Array("data".utf8)); append(UInt32(dataBytes))
+        return header
+    }
+}
+
+func runStreamMode() -> Never {
+    var args = CommandLine.arguments.dropFirst()
+    var recPath: String?, url: URL?, save: URL?
+    while let arg = args.popFirst() {
+        switch arg {
+        case "--rec": recPath = args.popFirst()
+        case "--url": url = args.popFirst().flatMap(URL.init(string:))
+        case "--save": save = args.popFirst().map { URL(fileURLWithPath: $0) }
+        default: break
+        }
+    }
+    let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] ?? ""
+    guard let recPath, let url, !key.isEmpty else {
+        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream --rec PATH --url WSS_URL [--save FILE]\n".utf8))
+        exit(2)
+    }
+    let session = StreamSession(recPath: recPath, url: url, apiKey: key, saveURL: save)
+    session.start()
+    dispatchMain()
+}
+
 // MARK: - Entry point
 
 if CommandLine.arguments.contains("--mic-users") {
     printMicUsers()
     exit(0)
+}
+if CommandLine.arguments.contains("--stream") {
+    runStreamMode()
 }
 
 func parseArguments() -> (URL, Bool)? {

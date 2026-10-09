@@ -8,6 +8,7 @@ core.DEFAULTS = {
   language     = "en",        -- Deepgram language code, or "multi" for mixed-language speech
   model        = "nova-3",
   smartFormat  = true,
+  streaming    = true,        -- stream audio while the key is held (needs DeepgramRecorder.app)
   minSeconds   = 0.3,         -- releases shorter than this are treated as accidental taps
   recBinary    = nil,         -- path to sox's `rec`; auto-detected when nil
   dictionary   = nil,         -- path to dictionary JSON; defaults to <hs.configdir>/deepgram-dictionary.json
@@ -105,6 +106,7 @@ core.MEETING_TITLES = {
 }
 
 core.API_URL = "https://api.deepgram.com/v1/listen"
+core.STREAM_URL = "wss://api.deepgram.com/v1/listen"
 
 -- Returns a new config table: defaults overlaid with `overrides`. Errors on unknown keys or
 -- invalid values so typos in a user's init.lua fail loudly.
@@ -156,17 +158,24 @@ function core.urlEncode(s)
   end))
 end
 
-function core.buildListenUrl(cfg, keyterms)
+function core.buildListenUrl(cfg, keyterms, base, extra)
   local params = {
     "model=" .. core.urlEncode(cfg.model),
     "language=" .. core.urlEncode(cfg.language),
     "punctuate=true",
   }
   if cfg.smartFormat then table.insert(params, "smart_format=true") end
+  for _, p in ipairs(extra or {}) do table.insert(params, p) end
   for _, term in ipairs(keyterms or {}) do
     table.insert(params, "keyterm=" .. core.urlEncode(term))
   end
-  return core.API_URL .. "?" .. table.concat(params, "&")
+  return (base or core.API_URL) .. "?" .. table.concat(params, "&")
+end
+
+-- Live-streaming URL for the raw 16 kHz mono 16-bit PCM that DeepgramRecorder --stream sends.
+function core.buildStreamUrl(cfg, keyterms)
+  return core.buildListenUrl(cfg, keyterms, core.STREAM_URL,
+    { "encoding=linear16", "sample_rate=16000", "channels=1" })
 end
 
 -- Normalises a decoded dictionary JSON value into { keyterms = {...}, replacements = {...} },

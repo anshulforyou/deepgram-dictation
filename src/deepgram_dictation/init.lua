@@ -89,10 +89,58 @@ local function transcribe()
   end)
 end
 
+local function finishStreaming(stdout, dict)
+  if not sendOnExit then
+    os.remove(audioPath)
+    setIndicator(nil)
+    return
+  end
+  local ok, result = pcall(hs.json.decode, (stdout or ""):match("([^\n]+)%s*$") or "{}")
+  result = ok and type(result) == "table" and result or {}
+  if type(result.transcript) == "string" then
+    setIndicator(nil)
+    os.remove(audioPath)
+    if result.transcript == "" then
+      hs.alert.show("No speech detected", 1)
+    else
+      pasteText(core.applyReplacements(result.transcript, dict.replacements))
+    end
+  else
+    -- Streaming failed (e.g. network blip): upload the saved recording instead.
+    log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
+    transcribe()
+  end
+end
+
+-- Streams audio to Deepgram while the key is held (much faster than uploading afterwards).
+local function startStreaming(helper)
+  local key = getApiKey()
+  if not key then
+    hs.alert.show("Deepgram API key not found in Keychain ('" .. cfg.keychainName .. "')")
+    return
+  end
+  local dict = loadDictionary()
+  recorder = hs.task.new(helper, function(_, stdout)
+    recorder = nil
+    finishStreaming(stdout, dict)
+  end, { "--stream", "--rec", recBinary, "--url", core.buildStreamUrl(cfg, dict.keyterms), "--save", audioPath })
+  recorder:setEnvironment({
+    DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
+  })
+  if not recorder:start() then
+    recorder = nil
+    hs.alert.show("Could not start recording, see Hammerspoon console")
+    return
+  end
+  setIndicator("🎙 Listening…")
+end
+
 local function startRecording()
   os.remove(audioPath)
   cancelled, sendOnExit = false, false
   startedAt = hs.timer.secondsSinceEpoch()
+  local helper = meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder"
+  if cfg.streaming and hs.fs.attributes(helper) then return startStreaming(helper) end
   recorder = hs.task.new(recBinary, function()
     recorder = nil
     if sendOnExit then
@@ -114,7 +162,12 @@ local function stopRecording()
   if not recorder then return end
   local duration = hs.timer.secondsSinceEpoch() - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
-  recorder:interrupt() -- SIGINT lets sox finalise the WAV header before exiting
+  if sendOnExit then
+    setIndicator("⏳ Transcribing…")
+    recorder:interrupt() -- SIGINT: sox finalises the WAV / the streamer flushes Deepgram's results
+  else
+    recorder:terminate() -- SIGTERM: discard
+  end
 end
 
 local function updateMenubar()

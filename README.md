@@ -14,6 +14,8 @@ app, and no account other than your Deepgram one.
 ## Features
 
 - **Hold-to-talk:** hold **Fn** (or a right-side modifier key), speak, release.
+- **Fast:** audio streams to Deepgram while you speak, so text appears about half a second after
+  you let go.
 - **Meeting transcription:** records in-person meetings from the mic, or online meetings
   (Zoom, Google Meet, Teams, Slack…) from the mic *and* computer audio, then gives you a
   speaker-labelled transcript on your clipboard, ready to paste into Notion, Google Docs or
@@ -189,6 +191,7 @@ deepgramDictation.start({
 | `language` | `"en"` | Any [Deepgram language code](https://developers.deepgram.com/docs/models-languages-overview), or `"multi"` for mixed-language speech |
 | `model` | `"nova-3"` | Deepgram model name |
 | `smartFormat` | `true` | Format numbers, dates, emails, etc. |
+| `streaming` | `true` | Stream audio while you speak. `false` uploads the recording after you release (slower) |
 | `minSeconds` | `0.3` | Shorter presses are ignored |
 | `restoreClipboard` | `true` | Put your previous clipboard back after pasting |
 | `showMenubar` | `true` | Show the 🎙 menu bar item |
@@ -296,9 +299,10 @@ See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they h
 ## How it works
 
 ```
-Hold key ──► sox `rec` → temp WAV (16 kHz mono)
-Release  ──► POST to api.deepgram.com/v1/listen (nova-3, keyterms)
-         ──► apply replacements ──► clipboard + ⌘V ──► restore clipboard
+Hold key ──► sox `rec` ──► DeepgramRecorder --stream ──► wss://api.deepgram.com/v1/listen
+             (16 kHz PCM, also saved to a temp WAV)       (nova-3, keyterms; transcribes live)
+Release  ──► flush the last results (~0.5 s) ──► apply replacements ──► clipboard + ⌘V
+             if streaming fails: upload the saved WAV to /v1/listen instead
 ```
 
 - [`src/deepgram_dictation/core.lua`](src/deepgram_dictation/core.lua): pure logic (config, URL

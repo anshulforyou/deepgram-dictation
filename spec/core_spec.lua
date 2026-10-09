@@ -82,6 +82,18 @@ describe("buildListenUrl", function()
   end)
 end)
 
+describe("buildStreamUrl", function()
+  it("uses the websocket endpoint with raw PCM parameters and keyterms", function()
+    local url = core.buildStreamUrl(core.mergeConfig(), { "Jane Doe" })
+    assert.are.equal("wss://api.deepgram.com/v1/listen?model=nova-3&language=en&punctuate=true&smart_format=true"
+      .. "&encoding=linear16&sample_rate=16000&channels=1&keyterm=Jane%20Doe", url)
+  end)
+
+  it("can be turned off", function()
+    assert.is_false(core.mergeConfig({ streaming = false }).streaming)
+  end)
+end)
+
 describe("normalizeDictionary", function()
   it("returns empty lists for non-table input", function()
     assert.are.same({ keyterms = {}, replacements = {} }, core.normalizeDictionary(nil))

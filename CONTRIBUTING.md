@@ -63,6 +63,9 @@ CI runs the same checks on every pull request. They must pass before merging.
 Rebuilding `DeepgramRecorder.app` with changed code changes its ad-hoc signature, so macOS
 asks for Microphone and System Audio Recording permission again. That's expected.
 
+Set `DEEPGRAM_STREAM_DEBUG=1` when running `DeepgramRecorder --stream` by hand to log every
+message Deepgram sends (with timestamps) to stderr.
+
 ## Reporting bugs
 
 Use the bug report template. Include your macOS version, Hammerspoon version, your config
