@@ -130,6 +130,53 @@ class RenderTest(unittest.TestCase):
             self.assertEqual(titled.name, "2026-10-09 14-30 Q3 - Q4 plan- draft.md")
 
 
+class RefileTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        utts = [dict(utt("mic", 0, 4.0, 5.0, "Morning, can you hear me?"), label="Me"),
+                dict(utt("system", 0, 65.0, 66.0, "Yes. Let's review the launch."), label="Speaker 1")]
+        self.md = mt.render_markdown(utts, datetime(2026, 10, 9, 18, 1), 2501, True, ["A note"])
+        self.path = self.root / "2026-10-09 18-01 Meeting.md"
+        self.path.write_text(self.md)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_parse_round_trips_render_markdown(self):
+        started_at, duration, online, notes, utts = mt.parse_transcript_markdown(self.md)
+        self.assertEqual(started_at, datetime(2026, 10, 9, 18, 1))
+        self.assertEqual(duration, 2501)
+        self.assertTrue(online)
+        self.assertEqual(notes, ["A note"])
+        self.assertEqual([(u["label"], u["start"], u["text"]) for u in utts], [
+            ("Me", 4.0, "Morning, can you hear me?"), ("Speaker 1", 65.0, "Yes. Let's review the launch."),
+        ])
+
+    def test_parse_rejects_other_markdown(self):
+        with self.assertRaises(mt.TranscribeError):
+            mt.parse_transcript_markdown("# Shopping list\n- milk\n")
+
+    def test_refile_moves_into_folder_and_indexes(self):
+        answer = {"folder": "Product Launch", "title": "Launch review", "summary": "Reviewed it.",
+                  "action_items": []}
+        with mock.patch.object(mt.meeting_organize, "run_claude", return_value=answer):
+            result = mt.refile(self.path, self.root, "/bin/claude")
+        new = Path(result["path"])
+        self.assertFalse(self.path.exists())
+        self.assertEqual(new.parent, self.root / "Product Launch")
+        self.assertIn("# Launch review", new.read_text())
+        self.assertIn("**Me** · 00:04\nMorning, can you hear me?", new.read_text())
+        self.assertIn("[Launch review](", (self.root / "Product Launch" / "meetings.md").read_text())
+
+    def test_refile_failure_leaves_transcript_in_place(self):
+        with mock.patch.object(mt.meeting_organize, "run_claude",
+                               side_effect=mt.meeting_organize.OrganizeError("offline")):
+            with self.assertRaisesRegex(mt.TranscribeError, "offline"):
+                mt.refile(self.path, self.root, "/bin/claude")
+        self.assertTrue(self.path.exists())
+
+
 class RunTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

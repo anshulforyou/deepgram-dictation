@@ -29,6 +29,10 @@ All notable changes to this project are documented here. The format follows
   AirPods; sox is now only used when streaming is off. Shows "🎧 Connecting mic…" until a
   Bluetooth mic is actually live.
 - "No speech detected" explains when the mic level was very low.
+- Online meetings record the mic in voice-processing mode: while a call app holds the mic in that
+  mode, macOS gave the recorder pure silence, so your own voice was missing from transcripts.
+- "File N unfiled transcripts with Claude" menu item and `meeting_transcribe.py --refile`, for
+  transcripts made while Claude was unavailable.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
   `keepMeetingAudio`, `recorderApp`, `python`, `detectMeetings`, `autoStopMeetings`,
   `menuHotkey`, `organizeWithClaude`, `claudePath`, `claudeModel`.

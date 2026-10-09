@@ -5,7 +5,9 @@ a title, summary and action items. Each folder keeps a `meetings.md` index, newe
 Uses only the Python standard library.
 """
 
+import getpass
 import json
+import os
 import re
 import subprocess
 import urllib.parse
@@ -100,8 +102,12 @@ def run_claude(claude_path, prompt, cwd, model=None, timeout=CLAUDE_TIMEOUT):
     ]
     if model:
         cmd += ["--model", model]
+    # Claude Code finds its login in the Keychain by user name; make sure it's set.
+    env = dict(os.environ)
+    env.setdefault("USER", getpass.getuser())
+    env.setdefault("LOGNAME", env["USER"])
     try:
-        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
     except FileNotFoundError:
         raise OrganizeError(f"Claude CLI not found at {claude_path}")
     except subprocess.TimeoutExpired:

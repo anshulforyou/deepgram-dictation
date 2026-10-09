@@ -312,9 +312,54 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
     return result
 
 
+def parse_transcript_markdown(text):
+    """Reads back a transcript written by render_markdown: (started_at, duration, online, notes,
+    utterances). Used to file a transcript that couldn't be organized when it was made."""
+    date = re.search(r"^- \*\*Date:\*\* (.+)$", text, flags=re.M)
+    if not date:
+        raise TranscribeError("Not a deepgram-dictation transcript (no Date line)")
+    started_at = datetime.strptime(date.group(1).strip(), "%a %d %b %Y, %H:%M")
+    duration = 0
+    match = re.search(r"^- \*\*Duration:\*\* ([\d:]+)$", text, flags=re.M)
+    if match:
+        for part in match.group(1).split(":"):
+            duration = duration * 60 + int(part)
+    online = "computer audio" in text.split("## Transcript", 1)[0]
+    notes = re.findall(r"^> (.+)$", text.split("## Transcript", 1)[0], flags=re.M)
+    utterances = []
+    body = text.split("## Transcript", 1)[1] if "## Transcript" in text else ""
+    for label, stamp, said in re.findall(r"^\*\*(.+?)\*\* · ([\d:]+)\n(.+)$", body, flags=re.M):
+        seconds = 0
+        for part in stamp.split(":"):
+            seconds = seconds * 60 + int(part)
+        utterances.append({"label": label, "start": float(seconds), "end": float(seconds), "text": said})
+    return started_at, duration, online, notes, utterances
+
+
+def refile(path, output_dir, claude_path, claude_model=None):
+    """Files an existing, unorganized transcript with Claude: adds title, summary and action items,
+    moves it into a topic folder and updates that folder's meetings.md."""
+    started_at, duration, online, notes, utterances = parse_transcript_markdown(path.read_text())
+    info, error = organize(utterances, output_dir, started_at, path.parent, claude_path, claude_model)
+    if error or not info:
+        raise TranscribeError(error or "Nothing to file: the transcript has no speech")
+    markdown = render_markdown(utterances, started_at, duration, online, notes, title=info["title"],
+                               summary=info["summary"], action_items=info["action_items"])
+    dest_dir = output_dir / info["folder"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    new_path = transcript_path(dest_dir, started_at, info["title"])
+    new_path.write_text(markdown)
+    meeting_organize.update_index(dest_dir, info["folder"], new_path, started_at, duration,
+                                  info["title"], info["summary"])
+    path.unlink()
+    return {"path": str(new_path), "folder": info["folder"], "title": info["title"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("session_dir", type=Path)
+    parser.add_argument("session_dir", type=Path, nargs="?")
+    parser.add_argument("--refile", type=Path, metavar="TRANSCRIPT",
+                        help="file an existing unorganized transcript (needs --organize-with-claude)")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", default="nova-3")
     parser.add_argument("--language", default="en")
@@ -326,6 +371,18 @@ def main(argv=None):
     parser.add_argument("--claude-model")
     args = parser.parse_args(argv)
 
+    if args.refile:
+        if not args.organize_with_claude:
+            parser.error("--refile needs --organize-with-claude")
+        try:
+            result = refile(args.refile, args.output_dir.expanduser(), args.organize_with_claude, args.claude_model)
+        except TranscribeError as e:
+            print(json.dumps({"error": str(e)}))
+            return 1
+        print(json.dumps(result))
+        return 0
+    if not args.session_dir:
+        parser.error("session_dir is required")
     try:
         result = run(args.session_dir, args.output_dir.expanduser(), args.model, args.language,
                      args.keychain_name, args.dictionary, args.keep_audio,

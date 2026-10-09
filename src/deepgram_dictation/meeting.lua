@@ -236,6 +236,56 @@ function M.toggle()
   if state == "idle" then M.start() elseif state == "recording" then M.stop() end
 end
 
+-- Transcripts saved at the top of transcriptsDir, i.e. not yet filed into a topic folder
+-- (Claude was unavailable or organizing was off when they were made).
+function M.unfiledTranscripts()
+  local list, root = {}, M.transcriptsDir()
+  if not exists(root) then return list end
+  for name in hs.fs.dir(root) do
+    if name:match("%.md$") and name ~= "meetings.md" and name:sub(1, 1) ~= "." then
+      table.insert(list, root .. "/" .. name)
+    end
+  end
+  table.sort(list)
+  return list
+end
+
+-- Files the given transcripts one after another with Claude.
+local function refileAll(paths)
+  local python = cfg.python or core.findExecutable(exists, core.PYTHON_CANDIDATES)
+  local claude = claudePath()
+  if not (python and claude) then
+    hs.alert.show("Filing needs python3 and the claude CLI")
+    return
+  end
+  local filed, failed = {}, {}
+  local function nextOne(i)
+    if i > #paths then
+      notify(string.format("Filed %d transcript%s", #filed, #filed == 1 and "" or "s"),
+        (#filed > 0 and ("Into: " .. table.concat(filed, ", ")) or "")
+          .. (#failed > 0 and ("\nNot filed: " .. failed[1]) or ""))
+      setState("idle")
+      return
+    end
+    local args = { SCRIPT, "--refile", paths[i], "--output-dir", M.transcriptsDir(), "--organize-with-claude", claude }
+    if cfg.claudeModel then table.insert(args, "--claude-model") table.insert(args, cfg.claudeModel) end
+    hs.task.new(python, function(_, stdout)
+      local ok, result = pcall(hs.json.decode, (stdout or ""):match("([^\n]+)%s*$") or "{}")
+      if ok and type(result) == "table" and result.folder then
+        table.insert(filed, result.folder)
+        log("filed %s into %s", paths[i], result.folder)
+      else
+        local err = ok and type(result) == "table" and result.error or "unexpected output"
+        table.insert(failed, tostring(err))
+        log("could not file %s: %s", paths[i], tostring(err))
+      end
+      nextOne(i + 1)
+    end, args):start()
+  end
+  setState("transcribing")
+  nextOne(1)
+end
+
 -- Session dirs left from earlier (failed transcription, or Hammerspoon restarted mid-pipeline).
 function M.pendingSessions()
   local pending = {}
@@ -312,6 +362,13 @@ function M.menuItems()
     hs.fs.mkdir(M.transcriptsDir())
     hs.execute("/usr/bin/open " .. string.format("%q", M.transcriptsDir()))
   end })
+  if state == "idle" and cfg.organizeWithClaude then
+    local unfiled = M.unfiledTranscripts()
+    if #unfiled > 0 then
+      table.insert(items, { title = string.format("File %d unfiled transcript%s with Claude", #unfiled,
+        #unfiled == 1 and "" or "s"), fn = function() refileAll(unfiled) end })
+    end
+  end
   if state == "idle" then
     for _, p in ipairs(M.pendingSessions()) do
       table.insert(items, { title = "Retry transcription: " .. p.name, fn = function() transcribe(p.dir) end })

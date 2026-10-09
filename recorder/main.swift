@@ -58,17 +58,28 @@ final class StatusWriter {
 /// device changes mid-capture (e.g. AirPods connecting). Only the input node is used: touching
 /// the engine's output side makes it pair the mic with the speakers in an aggregate device,
 /// which can deliver no input at all.
+///
+/// `voiceProcessing` turns on Apple's call mode (echo cancellation). It's needed while a call app
+/// (Meet, Zoom, ...) uses the mic in that mode: macOS then gives plain captures pure silence.
 final class MicCapture {
     static let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private let engine = AVAudioEngine()
+    private let voiceProcessing: Bool
     private var observer: NSObjectProtocol?
     private let onBuffer: (AVAudioPCMBuffer, AVAudioTime) -> Void
 
-    init(onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
+    init(voiceProcessing: Bool = false, onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
+        self.voiceProcessing = voiceProcessing
         self.onBuffer = onBuffer
     }
 
     func start() throws {
+        if voiceProcessing {
+            try engine.inputNode.setVoiceProcessingEnabled(true)
+            // Don't turn down the meeting audio the user is listening to.
+            engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+        }
         try installTap()
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
@@ -93,7 +104,11 @@ final class MicCapture {
               let converter = AVAudioConverter(from: inputFormat, to: format) else {
             throw RecorderError("no microphone input available (is Microphone permission granted?)")
         }
-        converter.downmix = true
+        if voiceProcessing && inputFormat.channelCount > 1 {
+            converter.channelMap = [0] // call mode reports several copies of the same mono signal
+        } else {
+            converter.downmix = true
+        }
         let ratio = format.sampleRate / inputFormat.sampleRate
         let onBuffer = self.onBuffer
 
@@ -128,7 +143,7 @@ final class MicRecorder {
     private var file: AVAudioFile?
     private(set) var firstSampleHostTime: Double?
 
-    func start(url: URL) throws {
+    func start(url: URL, voiceProcessing: Bool) throws {
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 16000,
@@ -136,7 +151,7 @@ final class MicRecorder {
         ]
         let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         self.file = file
-        let capture = MicCapture { [weak self] buffer, when in
+        let capture = MicCapture(voiceProcessing: voiceProcessing) { [weak self] buffer, when in
             guard let self else { return }
             if self.firstSampleHostTime == nil {
                 self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
@@ -294,7 +309,8 @@ final class Session {
     private func begin() {
         startHostTime = nowHostSeconds()
         do {
-            try mic.start(url: dir.appendingPathComponent("mic.m4a"))
+            // Online meetings: the call app holds the mic in call mode, so match it.
+            try mic.start(url: dir.appendingPathComponent("mic.m4a"), voiceProcessing: captureSystem)
         } catch {
             return fail("Microphone: \(error)")
         }

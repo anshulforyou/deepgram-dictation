@@ -133,6 +133,9 @@ Yes, loud and clear. Let's start with the launch plan.
 
 Good to know:
 
+- In online meetings the mic is recorded in Apple's voice-processing ("call") mode, the same mode
+  Meet and Zoom use. macOS silences plain recordings of a mic that a call app holds in that
+  mode. Echo cancellation is a side benefit.
 - **No headphones?** Your mic also hears the remote people through the speakers. Those
   duplicate lines are detected and removed automatically.
 - **Nothing is lost if something fails.** Recordings are kept until a transcript is saved. Use
@@ -167,6 +170,11 @@ Claude:
 - **2026-10-09 15:14** · [Mobile App Launch Plan Review](2026-10-09%2015-14%20Mobile%20App%20Launch%20Plan%20Review.md) · 2 min
   The team confirmed November 20 for the public release. Marketing needs final screenshots by Friday…
 ```
+
+Transcripts that couldn't be filed (Claude unavailable, or organizing switched off at the time)
+stay at the top of `~/Documents/Meeting Transcripts/`. Use **File N unfiled transcripts with
+Claude** in the 🎙 menu, or run
+`python3 ~/.hammerspoon/deepgram_dictation/meeting_transcribe.py --refile "<file>.md" --output-dir ~/Documents/Meeting\ Transcripts --organize-with-claude ~/.local/bin/claude`.
 
 Create, rename or merge folders yourself whenever you like. Claude uses the folder names and
 their recent meeting titles to decide where new meetings go. If Claude isn't available, the
