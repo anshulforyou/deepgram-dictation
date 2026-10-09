@@ -17,6 +17,9 @@ Things we especially care about:
 - audio or transcripts being kept on disk longer than documented, or sent anywhere other than
   Deepgram
 - `DeepgramRecorder.app` capturing audio when no recording was started
+- transcripts reaching Claude when `organizeWithClaude` is off, or the Claude CLI being given
+  tools, files or settings beyond the transcript text
+- meeting detection starting a recording without the user clicking **Transcribe**
 - the installer or uninstaller modifying files outside `~/.hammerspoon` and
   `~/Library/Application Support/deepgram-dictation`
 

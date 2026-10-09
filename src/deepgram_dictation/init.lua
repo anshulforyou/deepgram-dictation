@@ -7,6 +7,7 @@
 
 local core = require("deepgram_dictation.core")
 local meeting = require("deepgram_dictation.meeting")
+local detector = require("deepgram_dictation.detector")
 
 local M = { core = core, meeting = meeting }
 
@@ -162,10 +163,20 @@ function M.start(overrides)
   end):start()
 
   if cfg.showMenubar then
-    menubar = hs.menubar.new()
+    -- The autosave name keeps the icon where you ⌘-drag it across reloads.
+    menubar = hs.menubar.new(true, "deepgram-dictation")
     menubar:setMenu(buildMenu)
   end
+  -- Opens the same menu at the mouse pointer, for when the menu bar icon is hidden (e.g. by the notch).
+  if cfg.menuHotkey then
+    M.popup = hs.menubar.new(false)
+    M.menuHotkey = hs.hotkey.bind(cfg.menuHotkey.mods, cfg.menuHotkey.key, function()
+      M.popup:setMenu(buildMenu())
+      M.popup:popupMenu(hs.mouse.absolutePosition(), true)
+    end)
+  end
   meeting.setup(cfg, dictPath, updateMenubar)
+  detector.setup(cfg, meeting)
   updateMenubar()
   log("ready (hotkey=%s, model=%s, language=%s)", cfg.hotkey, cfg.model, cfg.language)
   return M
@@ -174,7 +185,10 @@ end
 function M.stop()
   if M.flagsTap then M.flagsTap:stop() M.flagsTap = nil end
   if M.keyTap then M.keyTap:stop() M.keyTap = nil end
+  detector.teardown()
   meeting.teardown()
+  if M.menuHotkey then M.menuHotkey:delete() M.menuHotkey = nil end
+  if M.popup then M.popup:delete() M.popup = nil end
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

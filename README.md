@@ -1,7 +1,8 @@
 # deepgram-dictation
 
 **Hold a key, speak, let go. Your words appear wherever your cursor is.**
-**Press another key to transcribe a whole meeting, in person or on Zoom / Google Meet.**
+**Join a Zoom or Google Meet call and it offers to transcribe it. Claude files every transcript
+into the right folder.**
 
 A small, open-source dictation and meeting-transcription tool for macOS. It works much like Wispr Flow, but
 uses your own [Deepgram](https://deepgram.com) API key. It runs inside
@@ -17,6 +18,10 @@ app, and no account other than your Deepgram one.
   (Zoom, Google Meet, Teams, Slack…) from the mic *and* computer audio, then gives you a
   speaker-labelled transcript on your clipboard, ready to paste into Notion, Google Docs or
   anywhere else. No bot joins your call.
+- **Meeting detection:** when a call starts, a small prompt asks whether to transcribe it. The
+  recording stops on its own when the call ends.
+- **Organized by Claude (optional):** each transcript gets a title, summary and action items,
+  and is filed into a topic folder with a `meetings.md` index.
 - **Pastes into any app:** your clipboard is restored afterwards.
 - **Deepgram Nova-3** with punctuation and smart formatting (numbers, emails, dates).
 - **Custom vocabulary:** names and jargon are sent as Deepgram
@@ -62,6 +67,8 @@ Then finish the macOS setup:
 3. Hold **Fn**, say something, release. Allow microphone access when macOS asks.
 4. Press **⌃⌥⌘M** to try a meeting recording. The first time, allow **DeepgramRecorder** to use
    the **Microphone** and **System Audio Recording**.
+5. Press **⌃⌥⌘D** to open the menu at your mouse pointer. This helps if the 🎙 icon is hidden
+   behind the notch or a crowded menu bar.
 
 Re-running `./install.sh` upgrades the module and leaves your settings, dictionary and key alone.
 
@@ -73,16 +80,27 @@ Re-running `./install.sh` upgrades the module and leaves your settings, dictiona
 | Release | Audio is sent to Deepgram ("⏳ Transcribing…"), then the text is pasted |
 | Tap for less than 0.3 s | Ignored, so accidental taps don't trigger anything |
 | Press another key while holding (e.g. Fn+F5) | Dictation is cancelled |
-| 🎙 menu bar icon | Enable/disable dictation, start/stop meetings, reload config |
+| 🎙 menu bar icon, or **⌃⌥⌘D** | Enable/disable dictation, start/stop meetings, reload config |
 
 ## Meeting transcription
 
-Start a recording from the 🎙 menu bar icon, or press **⌃⌥⌘M** to start and stop:
-
-| Mode | Records | Use for |
+| Meeting | How to start | Records |
 | --- | --- | --- |
-| **Online meeting** (hotkey default) | Microphone + computer audio | Zoom, Google Meet, Teams, Slack huddles, webinars |
-| **In-person meeting** | Microphone only | Meetings in a room, interviews, lectures |
+| **Online** (Zoom, Google Meet, Teams, Slack huddle, Webex, FaceTime…) | Join the call, then click **Transcribe** on the prompt. Or use the 🎙 menu | Microphone + computer audio |
+| **In person** (a room, interview, lecture) | Press **⌃⌥⌘M** (again to stop). Or use the 🎙 menu | Microphone only |
+
+### Meeting detection
+
+When a meeting app or a browser tab with a call starts using your microphone, a card in the
+top-right corner asks **"Google Meet detected. Transcribe this meeting?"**. Click **Transcribe**,
+or ignore it and it goes away. When the call ends (the app releases the mic, or the Meet tab is
+closed), the recording stops and is transcribed automatically.
+
+- Detected desktop apps: Zoom, Microsoft Teams, Slack, Webex, Discord, FaceTime, Skype.
+- In Chrome, Brave, Edge, Arc, Vivaldi, Opera and Safari, open tabs are checked for Google Meet,
+  Zoom, Teams, Slack huddle and Whereby URLs. The first time, macOS asks whether Hammerspoon may
+  control your browser. Allow it so tabs can be read. Firefox is matched by window title.
+- Nothing is recorded until you click **Transcribe**.
 
 While recording, the menu bar shows 🔴 and the elapsed time. When you stop:
 
@@ -119,8 +137,38 @@ Good to know:
   **Retry transcription** in the menu. Reloading Hammerspoon mid-meeting doesn't stop the recording.
 - Transcription runs after the meeting ends (not live). It usually takes a few seconds, or
   under a minute for an hour-long meeting.
-- Speaker separation works best with a few minutes of conversation. Very short clips may put
-  everyone under one speaker.
+- Speaker separation works best with a few minutes of real conversation. Very short clips may
+  put everyone under one speaker.
+
+### Organizing with Claude
+
+Turn it on in `~/.hammerspoon/init.lua`:
+
+```lua
+deepgramDictation.start({
+  organizeWithClaude = true,
+})
+```
+
+After each meeting, the transcript is sent to Claude through the
+[Claude Code](https://claude.com/claude-code) CLI you're logged into (`claude -p`, no tools enabled).
+Claude:
+
+1. picks the best existing folder in `~/Documents/Meeting Transcripts/` (or names a new one,
+   e.g. `Product Launch`, `Hiring`, `Acme Corp`),
+2. writes a title, a short summary and action items into the transcript,
+3. adds an entry to that folder's `meetings.md`, newest first:
+
+```markdown
+# Product Launch meetings
+
+- **2026-10-09 15:14** · [Mobile App Launch Plan Review](2026-10-09%2015-14%20Mobile%20App%20Launch%20Plan%20Review.md) · 2 min
+  The team confirmed November 20 for the public release. Marketing needs final screenshots by Friday…
+```
+
+Create, rename or merge folders yourself whenever you like. Claude uses the folder names and
+their recent meeting titles to decide where new meetings go. If Claude isn't available, the
+transcript is still saved (unfiled) and copied, and the notification says why it wasn't filed.
 - **Get consent.** Recording laws vary by place. Tell people when you're transcribing a meeting.
 
 ## Configuration
@@ -148,7 +196,13 @@ deepgramDictation.start({
 | `recBinary` | auto-detected | Path to sox's `rec` |
 | `keychainName` | `"deepgram-api-key"` | Keychain service name holding the API key |
 | `meetingHotkey` | `{ mods = {"ctrl","alt","cmd"}, key = "m" }` | Starts/stops a meeting recording. `false` disables it |
-| `meetingMode` | `"online"` | What the meeting hotkey records: `"online"` (mic + computer audio) or `"inPerson"` (mic only) |
+| `meetingMode` | `"inPerson"` | What the meeting hotkey records: `"inPerson"` (mic only) or `"online"` (mic + computer audio) |
+| `detectMeetings` | `true` | Offer to transcribe when a call starts |
+| `autoStopMeetings` | `true` | Stop and transcribe when a detected call ends |
+| `menuHotkey` | `{ mods = {"ctrl","alt","cmd"}, key = "d" }` | Shows the menu at the mouse pointer. `false` disables it |
+| `organizeWithClaude` | `false` | File transcripts into topic folders with Claude |
+| `claudePath` | auto-detected | Path to the `claude` CLI |
+| `claudeModel` | CLI default | Model for organizing, e.g. `"opus"` |
 | `meetingLanguage` | same as `language` | Language for meeting transcripts |
 | `transcriptsDir` | `~/Documents/Meeting Transcripts` | Where transcripts are saved |
 | `keepMeetingAudio` | `false` | Keep the audio after a successful transcription |
@@ -225,6 +279,9 @@ Open the Hammerspoon console (menu bar icon → Console). Lines from this tool s
 | "Couldn't start recording" / "Recorder didn't start" | Allow DeepgramRecorder under Privacy & Security → **Microphone** |
 | Asked for permissions again after updating | Expected when `DeepgramRecorder.app` is rebuilt with changed code. Allow again |
 | "DeepgramRecorder.app not found" | Install the Xcode Command Line Tools, then re-run `./install.sh` |
+| Can't see the 🎙 icon | It's hidden by the notch or a full menu bar. Use **⌃⌥⌘D**, hide other icons, or ⌘-drag 🎙 further right. Also check System Settings → Menu Bar allows Hammerspoon |
+| No prompt when a Google Meet call starts | Allow Hammerspoon to control your browser (System Settings → Privacy & Security → Automation) |
+| Transcript "Not filed" | Make sure `claude` works in Terminal and you're logged in. The reason is in the notification |
 
 ## Privacy
 
@@ -232,7 +289,8 @@ Dictation audio is recorded to a temporary file, sent over HTTPS directly to Dee
 `/v1/listen` endpoint, and deleted once it has been read. Meeting audio is stored in
 `~/Library/Application Support/deepgram-dictation/meetings/` only until its transcript is saved
 (unless you set `keepMeetingAudio`). Transcripts stay on your Mac. Nothing goes to any server
-other than Deepgram.
+other than Deepgram, unless you turn on `organizeWithClaude`, which sends the transcript text
+(not audio) to Anthropic through your Claude Code login.
 See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they handle audio.
 
 ## How it works
@@ -249,6 +307,11 @@ Release  ──► POST to api.deepgram.com/v1/listen (nova-3, keyterms)
   (event taps, recording, HTTP, pasting, menu bar).
 - [`src/deepgram_dictation/meeting.lua`](src/deepgram_dictation/meeting.lua): meeting start/stop,
   progress, notifications.
+- [`src/deepgram_dictation/detector.lua`](src/deepgram_dictation/detector.lua) and
+  [`prompt.lua`](src/deepgram_dictation/prompt.lua): meeting detection (which apps use the mic,
+  browser tab URLs) and the "Transcribe this meeting?" card.
+- [`src/deepgram_dictation/meeting_organize.py`](src/deepgram_dictation/meeting_organize.py):
+  filing with Claude and `meetings.md` indexes.
 - [`recorder/main.swift`](recorder/main.swift): `DeepgramRecorder.app`. It records the mic
   (AVAudioEngine) and computer audio (Core Audio process tap, macOS 14.2+) to separate AAC
   files. It's a separate app so macOS grants it its own audio permissions.

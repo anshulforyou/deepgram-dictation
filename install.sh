@@ -72,7 +72,7 @@ deepgramDictation = require("deepgram_dictation")
 deepgramDictation.start({
   -- hotkey = "fn",        -- or "rightOption", "rightCommand", "rightControl", "rightShift"
   -- language = "en",      -- or "multi" for mixed-language speech
-  -- meetingMode = "online", -- what ⌃⌥⌘M records: "online" (mic + computer audio) or "inPerson"
+  -- organizeWithClaude = true, -- file meeting transcripts into topic folders (needs Claude Code)
 })
 EOF
   say "Added deepgram-dictation to $HS_DIR/init.lua"
@@ -103,6 +103,8 @@ Done. Next steps:
      (If it was already on, quit and reopen Hammerspoon.)
   2. Hold Fn, speak, release. Allow microphone access the first time.
   3. System Settings → Keyboard → "Press 🌐 key to": set to "Do Nothing".
-  4. Meetings: press ⌃⌥⌘M (or use the 🎙 menu). The first time, allow DeepgramRecorder
-     to use the Microphone and System Audio Recording.
+  4. Meetings: join a Zoom/Meet call and click "Transcribe" on the prompt, or press ⌃⌥⌘M for an
+     in-person meeting. The first time, allow DeepgramRecorder to use the Microphone and
+     System Audio Recording.
+  5. Press ⌃⌥⌘D to open the menu at your mouse pointer if the 🎙 icon is hidden.
 EOF

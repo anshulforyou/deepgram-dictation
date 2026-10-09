@@ -16,8 +16,15 @@ All notable changes to this project are documented here. The format follows
 - `DeepgramRecorder.app`, a small native recorder built by `install.sh`.
 - Echo removal when remote audio plays through the speakers.
 - Retry for failed transcriptions; recordings survive Hammerspoon reloads.
+- Meeting detection: a prompt offers to transcribe when Zoom, Teams, Slack, Webex, FaceTime or a
+  browser tab on Google Meet/Zoom/Teams starts using the mic; detected meetings stop and
+  transcribe automatically when the call ends.
+- Optional organizing with Claude (Claude Code CLI): title, summary and action items, filed into
+  topic folders with a `meetings.md` index per folder.
+- `⌃⌥⌘D` opens the menu at the mouse pointer, for when the menu bar icon is hidden.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
-  `keepMeetingAudio`, `recorderApp`, `python`.
+  `keepMeetingAudio`, `recorderApp`, `python`, `detectMeetings`, `autoStopMeetings`,
+  `menuHotkey`, `organizeWithClaude`, `claudePath`, `claudeModel`.
 
 ## [0.1.0] - 2026-10-09
 

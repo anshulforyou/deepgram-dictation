@@ -5,7 +5,8 @@
 
 Reads SESSION_DIR/status.json, mic.m4a and (for online meetings) system.m4a, sends each track to
 Deepgram with speaker diarization, merges them on one timeline, and writes a Markdown file.
-Prints one JSON line: {"path": ..., "words": N, "speakers": [...]} or {"error": ...}.
+With --organize-with-claude, Claude files it into a topic folder (see meeting_organize.py).
+Prints one JSON line: {"path": ..., "words": N, "speakers": [...], "folder": ...} or {"error": ...}.
 
 Deepgram responses are cached in the session dir, so re-running after a failure later in the
 pipeline does not pay for the audio twice. Uses only the Python standard library.
@@ -22,9 +23,11 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import meeting_organize
+
 API_URL = "https://api.deepgram.com/v1/listen"
 TRACKS = ("mic", "system")
-ECHO_WINDOW = 2.0       # seconds around a mic utterance to look for the same words on system audio
+ECHO_WINDOW = 3.0       # seconds around a mic utterance to look for the same words on system audio
 ECHO_OVERLAP = 0.6      # fraction of a mic utterance's words that must appear in system audio
 MERGE_GAP = 2.0         # merge consecutive same-speaker utterances closer than this (seconds)
 MIN_TRACK_BYTES = 2048  # smaller files contain no usable audio
@@ -170,10 +173,12 @@ def speakers_in_order(utterances):
     return seen
 
 
-def render_markdown(utterances, started_at, duration, online, notes=()):
+def render_markdown(utterances, started_at, duration, online, notes=(), title=None, summary=None,
+                    action_items=()):
     lines = [
-        f"# Meeting transcript: {started_at.strftime('%a %-d %b %Y, %H:%M')}",
+        f"# {title or 'Meeting transcript'}",
         "",
+        f"- **Date:** {started_at.strftime('%a %-d %b %Y, %H:%M')}",
         f"- **Duration:** {format_timestamp(duration)}",
         f"- **Recorded:** {'microphone + computer audio' if online else 'microphone (in person)'}",
     ]
@@ -183,7 +188,11 @@ def render_markdown(utterances, started_at, duration, online, notes=()):
     lines.append("")
     for note in notes:
         lines += [f"> {note}", ""]
-    lines += ["---", ""]
+    if summary:
+        lines += ["## Summary", "", summary, ""]
+    if action_items:
+        lines += ["## Action items", ""] + [f"- [ ] {item}" for item in action_items] + [""]
+    lines += ["## Transcript", ""]
     if not utterances:
         lines += ["_No speech detected._", ""]
     for u in utterances:
@@ -191,8 +200,8 @@ def render_markdown(utterances, started_at, duration, online, notes=()):
     return "\n".join(lines)
 
 
-def transcript_path(output_dir, started_at):
-    base = started_at.strftime("%Y-%m-%d %H-%M") + " Meeting"
+def transcript_path(output_dir, started_at, title=None):
+    base = started_at.strftime("%Y-%m-%d %H-%M") + " " + meeting_organize.safe_name(title, "Meeting")
     path = output_dir / f"{base}.md"
     n = 2
     while path.exists():
@@ -220,8 +229,22 @@ def parse_started_at(status):
     return datetime.now(timezone.utc).astimezone()
 
 
+def organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model):
+    """Asks Claude for folder, title, summary and action items. Returns (info, error)."""
+    if not utterances:
+        return None, None
+    folders = meeting_organize.list_folders(output_dir)
+    prompt = meeting_organize.build_prompt(utterances, folders, started_at)
+    try:
+        info = meeting_organize.run_claude(claude_path, prompt, cwd=session_dir, model=claude_model)
+    except meeting_organize.OrganizeError as e:
+        return None, str(e)
+    info["folder"] = meeting_organize.resolve_folder(info["folder"], [name for name, _ in folders])
+    return info, None
+
+
 def run(session_dir, output_dir, model, language, keychain_name, dictionary=None,
-        keep_audio=False, api_key=None):
+        keep_audio=False, api_key=None, claude_path=None, claude_model=None):
     status_file = session_dir / "status.json"
     if not status_file.exists():
         raise TranscribeError(f"No recording found in {session_dir}")
@@ -253,11 +276,22 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
 
     utterances = merge_consecutive(label_speakers(mic + system, online))
     started_at = parse_started_at(status)
-    markdown = render_markdown(utterances, started_at, status.get("duration") or 0, online, notes)
+    duration = status.get("duration") or 0
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = transcript_path(output_dir, started_at)
+    info, organize_error = None, None
+    if claude_path:
+        info, organize_error = organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model)
+    info = info or {}
+
+    markdown = render_markdown(utterances, started_at, duration, online, notes, title=info.get("title"),
+                               summary=info.get("summary"), action_items=info.get("action_items", ()))
+    dest_dir = output_dir / info["folder"] if info.get("folder") else output_dir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = transcript_path(dest_dir, started_at, info.get("title"))
     path.write_text(markdown)
+    if info.get("folder"):
+        meeting_organize.update_index(dest_dir, info["folder"], path, started_at, duration,
+                                      info["title"], info["summary"])
 
     if not keep_audio:
         for f in session_dir.iterdir():
@@ -266,11 +300,16 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
     else:
         (session_dir / "transcript.txt").write_text(str(path))
 
-    return {
+    result = {
         "path": str(path),
         "words": sum(len(u["text"].split()) for u in utterances),
         "speakers": speakers_in_order(utterances),
     }
+    if info.get("folder"):
+        result.update(folder=info["folder"], title=info["title"])
+    if organize_error:
+        result["organizeError"] = organize_error
+    return result
 
 
 def main(argv=None):
@@ -282,11 +321,15 @@ def main(argv=None):
     parser.add_argument("--keychain-name", default="deepgram-api-key")
     parser.add_argument("--dictionary", type=Path)
     parser.add_argument("--keep-audio", action="store_true")
+    parser.add_argument("--organize-with-claude", metavar="CLAUDE_PATH", type=Path,
+                        help="file the transcript into a topic folder using this `claude` CLI")
+    parser.add_argument("--claude-model")
     args = parser.parse_args(argv)
 
     try:
         result = run(args.session_dir, args.output_dir.expanduser(), args.model, args.language,
-                     args.keychain_name, args.dictionary, args.keep_audio)
+                     args.keychain_name, args.dictionary, args.keep_audio,
+                     claude_path=args.organize_with_claude, claude_model=args.claude_model)
     except TranscribeError as e:
         print(json.dumps({"error": str(e)}))
         return 1

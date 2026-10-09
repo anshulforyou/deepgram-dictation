@@ -96,11 +96,22 @@ class RenderTest(unittest.TestCase):
         utts = [dict(utt("mic", 0, 0.0, 1.0, "Hello."), label="Me"),
                 dict(utt("system", 0, 65.0, 66.0, "Hi!"), label="Speaker 1")]
         md = mt.render_markdown(utts, datetime(2026, 10, 9, 14, 30), 125, True, ["Heads up"])
-        self.assertIn("# Meeting transcript: Fri 9 Oct 2026, 14:30", md)
+        self.assertIn("# Meeting transcript\n", md)
+        self.assertIn("- **Date:** Fri 9 Oct 2026, 14:30", md)
+        self.assertIn("## Transcript", md)
+        self.assertNotIn("## Summary", md)
         self.assertIn("- **Duration:** 02:05", md)
         self.assertIn("- **Speakers:** Me, Speaker 1", md)
         self.assertIn("> Heads up", md)
         self.assertIn("**Speaker 1** · 01:05\nHi!", md)
+
+    def test_markdown_with_claude_summary(self):
+        md = mt.render_markdown([], datetime(2026, 10, 9, 14, 30), 10, True, title="Launch plan sync",
+                                summary="We agreed on Friday.", action_items=["Asha: send deck"])
+        self.assertTrue(md.startswith("# Launch plan sync\n"))
+        self.assertIn("## Summary\n\nWe agreed on Friday.", md)
+        self.assertIn("## Action items\n\n- [ ] Asha: send deck", md)
+        self.assertLess(md.index("## Action items"), md.index("## Transcript"))
 
     def test_markdown_for_silence(self):
         md = mt.render_markdown([], datetime(2026, 10, 9, 14, 30), 10, False)
@@ -115,6 +126,8 @@ class RenderTest(unittest.TestCase):
             second = mt.transcript_path(out, datetime(2026, 10, 9, 14, 30))
             self.assertEqual(first.name, "2026-10-09 14-30 Meeting.md")
             self.assertEqual(second.name, "2026-10-09 14-30 Meeting (2).md")
+            titled = mt.transcript_path(out, datetime(2026, 10, 9, 14, 30), "Q3 / Q4 plan: draft")
+            self.assertEqual(titled.name, "2026-10-09 14-30 Q3 - Q4 plan- draft.md")
 
 
 class RunTest(unittest.TestCase):
@@ -170,6 +183,34 @@ class RunTest(unittest.TestCase):
              mock.patch.object(mt, "read_api_key", return_value="secret"):
             result = mt.run(self.session, self.out, "nova-3", "en", "k")
         self.assertIn("No speech was captured from computer audio", Path(result["path"]).read_text())
+
+    def test_organizes_into_folder_with_index(self):
+        claude_answer = {"folder": "product launch", "title": "Launch kickoff",
+                         "summary": "Kicked off the launch.", "action_items": ["Me: book venue"]}
+        (self.out / "Product Launch").mkdir(parents=True)
+        with mock.patch.object(mt, "post_audio", self.fake_post), \
+             mock.patch.object(mt, "read_api_key", return_value="secret"), \
+             mock.patch.object(mt.meeting_organize, "run_claude", return_value=claude_answer) as claude:
+            result = mt.run(self.session, self.out, "nova-3", "en", "k", claude_path="/bin/claude")
+
+        self.assertEqual(result["folder"], "Product Launch")  # reused existing folder despite case
+        path = Path(result["path"])
+        self.assertEqual(path.parent, self.out / "Product Launch")
+        self.assertIn("Launch kickoff", path.name)
+        self.assertIn("## Summary", path.read_text())
+        index = (self.out / "Product Launch" / "meetings.md").read_text()
+        self.assertIn("[Launch kickoff](", index)
+        self.assertIn("Can everyone hear me?", claude.call_args[0][1])  # transcript sent to Claude
+
+    def test_organize_failure_still_saves_transcript(self):
+        with mock.patch.object(mt, "post_audio", self.fake_post), \
+             mock.patch.object(mt, "read_api_key", return_value="secret"), \
+             mock.patch.object(mt.meeting_organize, "run_claude",
+                               side_effect=mt.meeting_organize.OrganizeError("not logged in")):
+            result = mt.run(self.session, self.out, "nova-3", "en", "k", claude_path="/bin/claude")
+        self.assertEqual(result["organizeError"], "not logged in")
+        self.assertEqual(Path(result["path"]).parent, self.out)
+        self.assertNotIn("folder", result)
 
     def test_main_reports_errors_as_json(self):
         (self.session / "status.json").unlink()

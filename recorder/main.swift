@@ -3,6 +3,7 @@
 // Microphone and System Audio Recording permission on its behalf.
 //
 //   DeepgramRecorder --out <session dir> [--system]
+//   DeepgramRecorder --mic-users     (prints apps currently using the microphone, as JSON)
 //
 // Writes into the session dir:
 //   mic.m4a, system.m4a  audio tracks
@@ -325,7 +326,54 @@ final class Session {
     }
 }
 
+// MARK: - Microphone users (for meeting detection)
+
+/// Prints a JSON array of processes currently capturing audio input, e.g.
+/// [{"pid": 123, "bundleID": "us.zoom.xos"}]. Needs no permissions (macOS 14.2+).
+func printMicUsers() {
+    func readProperty<T>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, _ value: inout T) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var size = UInt32(MemoryLayout<T>.size)
+        return withUnsafeMutablePointer(to: &value) { pointer in
+            AudioObjectGetPropertyData(object, &address, 0, nil, &size, pointer) == noErr
+        }
+    }
+
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyProcessObjectList,
+        mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var users: [[String: Any]] = []
+    if AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr {
+        var processes = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        if AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr {
+            for process in processes {
+                var running: UInt32 = 0
+                guard readProperty(process, kAudioProcessPropertyIsRunningInput, &running), running != 0 else { continue }
+                var pid: pid_t = 0
+                _ = readProperty(process, kAudioProcessPropertyPID, &pid)
+                var bundleID: Unmanaged<CFString>?
+                var entry: [String: Any] = ["pid": Int(pid)]
+                if readProperty(process, kAudioProcessPropertyBundleID, &bundleID), let bundleID {
+                    entry["bundleID"] = bundleID.takeRetainedValue() as String
+                }
+                users.append(entry)
+            }
+        }
+    }
+    let data = (try? JSONSerialization.data(withJSONObject: users)) ?? Data("[]".utf8)
+    FileHandle.standardOutput.write(data)
+    FileHandle.standardOutput.write(Data("\n".utf8))
+}
+
 // MARK: - Entry point
+
+if CommandLine.arguments.contains("--mic-users") {
+    printMicUsers()
+    exit(0)
+}
 
 func parseArguments() -> (URL, Bool)? {
     var args = CommandLine.arguments.dropFirst()

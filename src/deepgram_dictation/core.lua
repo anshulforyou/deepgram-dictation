@@ -16,18 +16,26 @@ core.DEFAULTS = {
   showMenubar  = true,
 
   -- Meeting transcription
+  menuHotkey       = { mods = { "ctrl", "alt", "cmd" }, key = "d" }, -- shows the menu at the mouse; false disables
   meetingHotkey    = { mods = { "ctrl", "alt", "cmd" }, key = "m" }, -- toggles a meeting; false disables
-  meetingMode      = "online",  -- what the hotkey records: "online" (mic + computer audio) or "inPerson"
+  meetingMode      = "inPerson", -- what the hotkey records: "inPerson" (mic) or "online" (mic + computer audio)
+  detectMeetings   = true,      -- offer to transcribe when Zoom/Meet/Teams/... start using the mic
+  autoStopMeetings = true,      -- stop and transcribe when a detected meeting ends
   meetingLanguage  = nil,       -- defaults to `language`
   transcriptsDir   = nil,       -- defaults to ~/Documents/Meeting Transcripts
   keepMeetingAudio = false,     -- keep recordings after a successful transcription
   recorderApp      = nil,       -- defaults to ~/Library/Application Support/deepgram-dictation/DeepgramRecorder.app
   python           = nil,       -- python3 path; auto-detected when nil
+
+  -- Organizing transcripts with Claude (sends the transcript to Anthropic via the Claude Code CLI)
+  organizeWithClaude = false,   -- file each transcript into a topic folder with title, summary, action items
+  claudePath       = nil,       -- `claude` CLI path; auto-detected when nil
+  claudeModel      = nil,       -- e.g. "opus"; nil uses the CLI's default model
 }
 
 core.OPTIONS = {
   recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
-  recorderApp = true, python = true,
+  recorderApp = true, python = true, claudePath = true, claudeModel = true,
 }
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
@@ -45,6 +53,56 @@ core.MEETING_MODES = { online = true, inPerson = true }
 
 core.REC_CANDIDATES = { "/opt/homebrew/bin/rec", "/usr/local/bin/rec" }
 core.PYTHON_CANDIDATES = { "/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3" }
+
+-- Paths relative to $HOME are prefixed with "~/".
+core.CLAUDE_CANDIDATES = { "~/.local/bin/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude" }
+
+-- Desktop apps that only use the microphone during a call.
+core.MEETING_APPS = {
+  ["us.zoom.xos"]                   = "Zoom",
+  ["com.microsoft.teams2"]          = "Microsoft Teams",
+  ["com.microsoft.teams"]           = "Microsoft Teams",
+  ["com.tinyspeck.slackmacgap"]     = "Slack huddle",
+  ["com.cisco.webexmeetingsapp"]    = "Webex",
+  ["Cisco-Systems.Spark"]           = "Webex",
+  ["com.hnc.Discord"]               = "Discord",
+  ["com.apple.FaceTime"]            = "FaceTime",
+  ["com.apple.avconferenced"]       = "FaceTime",
+  ["com.skype.skype"]               = "Skype",
+}
+
+-- Browsers, matched by bundle ID prefix (capture often runs in a helper such as
+-- com.google.Chrome.helper). `script` is how to read tab URLs: "chromium", "safari" or nil.
+core.BROWSERS = {
+  { prefix = "com.google.Chrome", name = "Google Chrome", app = "com.google.Chrome", script = "chromium" },
+  { prefix = "com.brave.Browser", name = "Brave Browser", app = "com.brave.Browser", script = "chromium" },
+  { prefix = "com.microsoft.edgemac", name = "Microsoft Edge", app = "com.microsoft.edgemac", script = "chromium" },
+  { prefix = "company.thebrowser.Browser", name = "Arc", app = "company.thebrowser.Browser", script = "chromium" },
+  { prefix = "com.vivaldi.Vivaldi", name = "Vivaldi", app = "com.vivaldi.Vivaldi", script = "chromium" },
+  { prefix = "com.operasoftware.Opera", name = "Opera", app = "com.operasoftware.Opera", script = "chromium" },
+  { prefix = "com.apple.WebKit.GPU", name = "Safari", app = "com.apple.Safari", script = "safari" },
+  { prefix = "com.apple.Safari", name = "Safari", app = "com.apple.Safari", script = "safari" },
+  { prefix = "org.mozilla.firefox", name = "Firefox", app = "org.mozilla.firefox" },
+}
+
+-- Web meeting URLs (Lua patterns, matched against lowercased URLs).
+core.MEETING_URLS = {
+  { pattern = "^https://meet%.google%.com/%l%l%l%-%l%l%l%l%-%l%l%l", name = "Google Meet" },
+  { pattern = "^https://[%w%.]*zoom%.us/wc/",                         name = "Zoom" },
+  { pattern = "^https://[%w%.]*zoom%.us/j/",                          name = "Zoom" },
+  { pattern = "^https://teams%.microsoft%.com/",                      name = "Microsoft Teams" },
+  { pattern = "^https://teams%.live%.com/",                           name = "Microsoft Teams" },
+  { pattern = "^https://app%.slack%.com/huddle/",                     name = "Slack huddle" },
+  { pattern = "^https://whereby%.com/",                               name = "Whereby" },
+  { pattern = "^https://[%w%-]+%.whereby%.com/",                      name = "Whereby" },
+}
+
+-- Window titles that mean a meeting is open (for browsers without tab scripting).
+core.MEETING_TITLES = {
+  { pattern = "^Meet %- %l%l%l%-%l%l%l%l%-%l%l%l", name = "Google Meet" },
+  { pattern = "^Meet: ",                           name = "Google Meet" },
+  { pattern = "Zoom Meeting",                      name = "Zoom" },
+}
 
 core.API_URL = "https://api.deepgram.com/v1/listen"
 
@@ -74,9 +132,11 @@ function core.mergeConfig(overrides)
   if not core.MEETING_MODES[cfg.meetingMode] then
     error("deepgram-dictation: meetingMode must be \"online\" or \"inPerson\"", 2)
   end
-  local mh = cfg.meetingHotkey
-  if mh ~= false and (type(mh) ~= "table" or type(mh.mods) ~= "table" or type(mh.key) ~= "string") then
-    error("deepgram-dictation: meetingHotkey must be false or { mods = {...}, key = \"m\" }", 2)
+  for _, name in ipairs({ "meetingHotkey", "menuHotkey" }) do
+    local hk = cfg[name]
+    if hk ~= false and (type(hk) ~= "table" or type(hk.mods) ~= "table" or type(hk.key) ~= "string") then
+      error("deepgram-dictation: " .. name .. " must be false or { mods = {...}, key = \"m\" }", 2)
+    end
   end
   return cfg
 end
@@ -174,6 +234,66 @@ function core.hotkeyTransition(hotkey, keyCode, flags, active)
   return flags[spec.flag] and "press" or nil
 end
 
+-- Classifies a process using the microphone (from DeepgramRecorder --mic-users).
+-- Returns { kind = "app", key, name } for meeting apps, { kind = "browser", key, name, browser }
+-- for browsers (whose tabs still need checking), or nil.
+function core.classifyMicUser(bundleID)
+  if type(bundleID) ~= "string" then return nil end
+  local app = core.MEETING_APPS[bundleID]
+  if app then return { kind = "app", key = bundleID, name = app } end
+  for _, b in ipairs(core.BROWSERS) do
+    if bundleID == b.prefix or bundleID:sub(1, #b.prefix + 1) == b.prefix .. "." then
+      return { kind = "browser", key = b.app, name = b.name, browser = b }
+    end
+  end
+  return nil
+end
+
+-- Name of the first meeting service among `urls`, or nil.
+function core.meetingFromUrls(urls)
+  for _, url in ipairs(urls or {}) do
+    local lower = tostring(url):lower()
+    for _, m in ipairs(core.MEETING_URLS) do
+      if lower:match(m.pattern) then return m.name end
+    end
+  end
+  return nil
+end
+
+function core.meetingFromTitles(titles)
+  for _, title in ipairs(titles or {}) do
+    for _, m in ipairs(core.MEETING_TITLES) do
+      if tostring(title):match(m.pattern) then return m.name end
+    end
+  end
+  return nil
+end
+
+-- Flattens AppleScript's `URL of every tab of every window` result (a list of lists).
+function core.flattenUrls(value)
+  local out = {}
+  local function walk(v)
+    if type(v) == "table" then
+      for _, x in ipairs(v) do walk(x) end
+    elseif type(v) == "string" then
+      table.insert(out, v)
+    end
+  end
+  walk(value)
+  return out
+end
+
+-- Tracks how long a detected meeting has been gone. Returns true once it has been absent for
+-- at least `grace` seconds; any sighting resets the clock.
+function core.newEndTracker(grace)
+  local goneSince
+  return function(present, now)
+    if present then goneSince = nil return false end
+    goneSince = goneSince or now
+    return now - goneSince >= grace
+  end
+end
+
 -- "4:05" or "1:02:03" for an elapsed number of seconds.
 function core.formatElapsed(seconds)
   seconds = math.max(0, math.floor(seconds))
@@ -188,7 +308,8 @@ function core.sessionName(t)
 end
 
 -- Arguments for meeting_transcribe.py.
-function core.transcribeArgs(cfg, script, sessionDir, transcriptsDir, dictionary)
+-- `claudePath` is set only when organizing with Claude is enabled and the CLI was found.
+function core.transcribeArgs(cfg, script, sessionDir, transcriptsDir, dictionary, claudePath)
   local args = {
     script, sessionDir,
     "--output-dir", transcriptsDir,
@@ -201,6 +322,14 @@ function core.transcribeArgs(cfg, script, sessionDir, transcriptsDir, dictionary
     table.insert(args, dictionary)
   end
   if cfg.keepMeetingAudio then table.insert(args, "--keep-audio") end
+  if claudePath then
+    table.insert(args, "--organize-with-claude")
+    table.insert(args, claudePath)
+    if cfg.claudeModel then
+      table.insert(args, "--claude-model")
+      table.insert(args, cfg.claudeModel)
+    end
+  end
   return args
 end
 

@@ -67,11 +67,33 @@ local function pollUntil(check, timeout, onTimeout)
   end)
 end
 
-local function beginRecordingState(dir, startedAt, online)
-  session = { dir = dir, startedAt = startedAt, online = online }
+local function readSource(dir)
+  local f = io.open(dir .. "/source.json", "r")
+  if not f then return nil end
+  local raw = f:read("a")
+  f:close()
+  local ok, data = pcall(hs.json.decode, raw)
+  return ok and type(data) == "table" and data or nil
+end
+
+local function beginRecordingState(dir, startedAt, online, source)
+  session = { dir = dir, startedAt = startedAt, online = online, source = source }
   tickTimer = hs.timer.doEvery(1, changed)
   setState("recording")
 end
+
+local function claudePath()
+  if not cfg.organizeWithClaude then return nil end
+  if cfg.claudePath then return cfg.claudePath end
+  local home = os.getenv("HOME")
+  local candidates = {}
+  for _, p in ipairs(core.CLAUDE_CANDIDATES) do table.insert(candidates, (p:gsub("^~", home))) end
+  local found = core.findExecutable(exists, candidates)
+  if not found then log("organizeWithClaude is on but the claude CLI was not found") end
+  return found
+end
+
+local onTranscribed -- defined below
 
 local function transcribe(dir)
   local python = cfg.python
@@ -82,33 +104,50 @@ local function transcribe(dir)
     return
   end
   setState("transcribing")
-  local args = core.transcribeArgs(cfg, SCRIPT, dir, M.transcriptsDir(), dictPath)
+  local args = core.transcribeArgs(cfg, SCRIPT, dir, M.transcriptsDir(), dictPath, claudePath())
   transcriber = hs.task.new(python, function(_, stdout, stderr)
     transcriber = nil
-    local result, err = core.parseResultLine(stdout, hs.json.decode)
-    if not result then
-      log("transcription failed: %s %s", tostring(err), tostring(stderr))
-      notify("Meeting transcription failed", tostring(err) .. "\nUse the 🎙 menu to retry.")
+    -- Never leave the menu stuck on "Transcribing…", whatever goes wrong below.
+    local ok, err = xpcall(onTranscribed, debug.traceback, stdout, stderr)
+    if not ok then
+      pcall(log, "unexpected error: %s", tostring(err))
+      notify("Meeting transcription failed", "Unexpected error, see the Hammerspoon console. Use the 🎙 menu to retry.")
       setState("idle")
-      return
     end
-    local f = io.open(result.path, "r")
-    if f then
-      hs.pasteboard.setContents(f:read("a"))
-      f:close()
-    end
-    lastTranscript = result.path
-    notify("Meeting transcript copied",
-      string.format("%d words · %s\nPaste it anywhere, or click to open.", result.words or 0,
-        table.concat(result.speakers or {}, ", ")),
-      result.path)
-    log("saved %s", result.path)
-    setState("idle")
   end, args)
   transcriber:start()
 end
 
-function M.start(mode)
+onTranscribed = function(stdout, stderr)
+  local result, err = core.parseResultLine(stdout, hs.json.decode)
+  if not result then
+    log("transcription failed: %s %s", tostring(err), tostring(stderr))
+    notify("Meeting transcription failed", tostring(err) .. "\nUse the 🎙 menu to retry.")
+    setState("idle")
+    return
+  end
+  local f = io.open(result.path, "r")
+  if f then
+    hs.pasteboard.setContents(f:read("a"))
+    f:close()
+  end
+  lastTranscript = result.path
+  local where = result.folder and ("Filed in " .. result.folder .. " · ") or ""
+  if result.organizeError then
+    log("organizing failed: %s", result.organizeError)
+    where = "Not filed (" .. result.organizeError .. ") · "
+  end
+  notify(result.title and ("Copied: " .. result.title) or "Meeting transcript copied",
+    string.format("%s%d words · %s\nPaste it anywhere, or click to open.", where, result.words or 0,
+      table.concat(result.speakers or {}, ", ")),
+    result.path)
+  log("saved %s", result.path)
+  setState("idle")
+end
+
+-- `source` (optional) describes a detected meeting, e.g. { key = "us.zoom.xos", name = "Zoom",
+-- kind = "app" }; the detector uses it to stop recording when that meeting ends.
+function M.start(mode, source)
   if state ~= "idle" then return end
   local online = (mode or cfg.meetingMode) == "online"
   local app = M.recorderApp()
@@ -121,6 +160,7 @@ function M.start(mode)
   hs.fs.mkdir(SUPPORT_DIR)
   hs.fs.mkdir(SESSIONS_DIR)
   hs.fs.mkdir(dir)
+  if source then hs.json.write(source, dir .. "/source.json", false, true) end
   local args = { "-n", "-a", app, "--args", "--out", dir }
   if online then table.insert(args, "--system") end
   hs.task.new("/usr/bin/open", nil, args):start()
@@ -130,8 +170,9 @@ function M.start(mode)
     local status = readStatus(dir)
     if not status then return false end
     if status.state == "recording" then
-      beginRecordingState(dir, hs.timer.secondsSinceEpoch(), online)
-      hs.alert.show(online and "🔴 Recording meeting (mic + computer audio)" or "🔴 Recording meeting (mic)", 2)
+      beginRecordingState(dir, hs.timer.secondsSinceEpoch(), online, source)
+      local what = source and source.name or (online and "meeting (mic + computer audio)" or "meeting (mic)")
+      hs.alert.show("🔴 Recording " .. what, 2)
       for _, w in ipairs(status.warnings or {}) do hs.alert.show(w, 6) end
       return true
     elseif status.state == "error" then
@@ -169,8 +210,10 @@ local function finishStopping(dir, andThen)
   end)
 end
 
-function M.stop()
+-- `reason` (optional) is shown as a notification, e.g. when a detected meeting ended.
+function M.stop(reason)
   if state ~= "recording" or not session then return end
+  if reason then notify(reason, "Transcribing the meeting…") end
   local dir = session.dir
   session = nil
   signalRecorder(dir, "INT")
@@ -220,7 +263,7 @@ local function adoptRunningSession()
       local elapsed = 0
       local attrs = hs.fs.attributes(dir .. "/status.json")
       if attrs then elapsed = os.time() - attrs.modification end
-      beginRecordingState(dir, hs.timer.secondsSinceEpoch() - elapsed, status.captureSystem)
+      beginRecordingState(dir, hs.timer.secondsSinceEpoch() - elapsed, status.captureSystem, readSource(dir))
       log("resumed tracking recording %s", name)
       return
     end
@@ -230,6 +273,7 @@ end
 function M.recorderApp() return cfg.recorderApp or (SUPPORT_DIR .. "/DeepgramRecorder.app") end
 function M.transcriptsDir() return cfg.transcriptsDir or (os.getenv("HOME") .. "/Documents/Meeting Transcripts") end
 function M.state() return state end
+function M.source() return session and session.source or nil end
 
 function M.elapsed()
   return session and (hs.timer.secondsSinceEpoch() - session.startedAt) or 0
@@ -249,7 +293,9 @@ function M.menuItems()
     table.insert(items, { title = "Transcribe in-person meeting (mic only)",
                           fn = function() M.start("inPerson") end })
   elseif state == "recording" then
-    table.insert(items, { title = "Stop & transcribe (" .. core.formatElapsed(M.elapsed()) .. ")", fn = M.stop })
+    local what = session.source and (session.source.name .. " ") or ""
+    table.insert(items, { title = "Stop & transcribe " .. what .. "(" .. core.formatElapsed(M.elapsed()) .. ")",
+                          fn = function() M.stop() end })
     table.insert(items, { title = "Discard recording", fn = M.discard })
   else
     local label = ({ starting = "Starting recorder…", stopping = "Finishing recording…",
