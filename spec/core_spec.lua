@@ -412,3 +412,26 @@ describe("noSpeechHint", function()
     assert.is_nil(core.noSpeechHint("AirPods Pro", 27, nil))
   end)
 end)
+
+describe("parseStreamOutput", function()
+  local function decode(line)
+    local map = {
+      ['{"event":"listening"}'] = { event = "listening" },
+      ['{"transcript":"hi"}'] = { transcript = "hi" },
+      ['{"error":"offline"}'] = { error = "offline" },
+    }
+    if map[line] == nil then error("bad json") end
+    return map[line]
+  end
+
+  it("skips progress events and returns the final result", function()
+    local out = '{"event":"listening"}\n{"transcript":"hi"}\n'
+    assert.are.same({ transcript = "hi" }, core.parseStreamOutput(out, decode))
+  end)
+
+  it("handles errors, junk and empty output", function()
+    assert.are.same({ error = "offline" }, core.parseStreamOutput('junk\n{"error":"offline"}', decode))
+    assert.is_nil(core.parseStreamOutput('{"event":"listening"}\n', decode))
+    assert.is_nil(core.parseStreamOutput(nil, decode))
+  end)
+end)

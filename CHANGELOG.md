@@ -25,6 +25,10 @@ All notable changes to this project are documented here. The format follows
 - Dictation streams audio to Deepgram's live API while the key is held: text arrives ~0.5 s after
   release instead of ~2.5-3.5 s. Falls back to uploading the recording if streaming fails.
   `streaming = false` restores the old behaviour.
+- Dictation captures audio with AVAudioEngine instead of sox. sox only delivered noise from
+  AirPods; sox is now only used when streaming is off. Shows "🎧 Connecting mic…" until a
+  Bluetooth mic is actually live.
+- "No speech detected" explains when the mic level was very low.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
   `keepMeetingAudio`, `recorderApp`, `python`, `detectMeetings`, `autoStopMeetings`,
   `menuHotkey`, `organizeWithClaude`, `claudePath`, `claudeModel`.

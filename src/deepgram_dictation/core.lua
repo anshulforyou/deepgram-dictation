@@ -227,6 +227,17 @@ function core.extractTranscript(resp)
   return text
 end
 
+-- Result of `DeepgramRecorder --stream`: the last JSON line that isn't a progress event
+-- (e.g. {"event":"listening"}). Returns the decoded table or nil.
+function core.parseStreamOutput(text, decode)
+  local result
+  for line in (text or ""):gmatch("[^\n]+") do
+    local ok, value = pcall(decode, line)
+    if ok and type(value) == "table" and value.event == nil then result = value end
+  end
+  return result
+end
+
 -- Peak level (0..1) of 16-bit little-endian PCM WAV data with a 44-byte header, or nil.
 function core.wavPeak(data)
   if type(data) ~= "string" or #data < 46 or data:sub(1, 4) ~= "RIFF" then return nil end

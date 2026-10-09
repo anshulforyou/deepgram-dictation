@@ -106,8 +106,7 @@ local function finishStreaming(stdout, dict)
     setIndicator(nil)
     return
   end
-  local ok, result = pcall(hs.json.decode, (stdout or ""):match("([^\n]+)%s*$") or "{}")
-  result = ok and type(result) == "table" and result or {}
+  local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
   if type(result.transcript) == "string" then
     setIndicator(nil)
     if result.transcript == "" then alertNoSpeech() end
@@ -130,10 +129,19 @@ local function startStreaming(helper)
     return
   end
   local dict = loadDictionary()
+  local output, live = "", false
   recorder = hs.task.new(helper, function(_, stdout)
     recorder = nil
-    finishStreaming(stdout, dict)
-  end, { "--stream", "--rec", recBinary, "--url", core.buildStreamUrl(cfg, dict.keyterms), "--save", audioPath })
+    finishStreaming(output .. (stdout or ""), dict)
+  end, function(_, stdout)
+    output = output .. (stdout or "")
+    -- Bluetooth mics (AirPods) take a moment to switch on; say when they're actually live.
+    if not live and recorder and not sendOnExit and output:find('"event":"listening"', 1, true) then
+      live = true
+      setIndicator("🎙 Listening…")
+    end
+    return true
+  end, { "--stream", "--url", core.buildStreamUrl(cfg, dict.keyterms), "--save", audioPath })
   recorder:setEnvironment({
     DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
   })
@@ -142,7 +150,7 @@ local function startStreaming(helper)
     hs.alert.show("Could not start recording, see Hammerspoon console")
     return
   end
-  setIndicator("🎙 Listening…")
+  setIndicator("🎧 Connecting mic…")
 end
 
 local function startRecording()
@@ -151,6 +159,10 @@ local function startRecording()
   startedAt = hs.timer.secondsSinceEpoch()
   local helper = meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder"
   if cfg.streaming and hs.fs.attributes(helper) then return startStreaming(helper) end
+  if not recBinary then
+    hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
+    return
+  end
   recorder = hs.task.new(recBinary, function()
     recorder = nil
     if sendOnExit then
@@ -204,12 +216,9 @@ function M.start(overrides)
   M.stop()
   cfg = core.mergeConfig(overrides)
   dictPath = cfg.dictionary or (hs.configdir .. "/deepgram-dictionary.json")
+  -- sox is only needed when streaming is off or DeepgramRecorder.app isn't built.
   recBinary = cfg.recBinary
     or core.findExecutable(function(p) return hs.fs.attributes(p) ~= nil end, core.REC_CANDIDATES)
-  if not recBinary then
-    hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
-    return M
-  end
 
   M.flagsTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
     if not enabled then return false end

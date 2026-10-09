@@ -54,27 +54,22 @@ final class StatusWriter {
 
 // MARK: - Microphone
 
-/// Records the default input device, converted to 16 kHz mono so the file format stays constant
-/// even if the input device changes mid-recording. Only the input node is used: touching the
-/// engine's output side makes it pair the mic with the speakers in an aggregate device, which
-/// can deliver no input at all.
-final class MicRecorder {
+/// Captures the default input device as 16 kHz mono Float32 buffers. Re-taps when the input
+/// device changes mid-capture (e.g. AirPods connecting). Only the input node is used: touching
+/// the engine's output side makes it pair the mic with the speakers in an aggregate device,
+/// which can deliver no input at all.
+final class MicCapture {
+    static let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private let engine = AVAudioEngine()
-    private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-    private var file: AVAudioFile?
-    private(set) var firstSampleHostTime: Double?
     private var observer: NSObjectProtocol?
+    private let onBuffer: (AVAudioPCMBuffer, AVAudioTime) -> Void
 
-    func start(url: URL) throws {
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatMPEG4AAC,
-            AVSampleRateKey: 16000,
-            AVNumberOfChannelsKey: 1,
-        ]
-        file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+    init(onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
+        self.onBuffer = onBuffer
+    }
+
+    func start() throws {
         try installTap()
-
-        // Input device switched (e.g. AirPods connected): re-tap with the new device's format.
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
         ) { [weak self] _ in
@@ -87,26 +82,22 @@ final class MicRecorder {
                 FileHandle.standardError.write("mic restart failed: \(error)\n".data(using: .utf8)!)
             }
         }
-
         engine.prepare()
         try engine.start()
     }
 
     private func installTap() throws {
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+        let format = Self.format
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
               let converter = AVAudioConverter(from: inputFormat, to: format) else {
             throw RecorderError("no microphone input available (is Microphone permission granted?)")
         }
         converter.downmix = true
-        let format = self.format
         let ratio = format.sampleRate / inputFormat.sampleRate
+        let onBuffer = self.onBuffer
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, when in
-            guard let self, let file = self.file else { return }
-            if self.firstSampleHostTime == nil {
-                self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
-            }
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, when in
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
             guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
             var supplied = false
@@ -120,7 +111,7 @@ final class MicRecorder {
                 status.pointee = .haveData
                 return buffer
             }
-            if output.frameLength > 0 { try? file.write(from: output) }
+            if output.frameLength > 0 { onBuffer(output, when) }
         }
     }
 
@@ -128,6 +119,37 @@ final class MicRecorder {
         if let observer { NotificationCenter.default.removeObserver(observer) }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+    }
+}
+
+/// Records the microphone to a 16 kHz mono AAC file.
+final class MicRecorder {
+    private var capture: MicCapture?
+    private var file: AVAudioFile?
+    private(set) var firstSampleHostTime: Double?
+
+    func start(url: URL) throws {
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: 16000,
+            AVNumberOfChannelsKey: 1,
+        ]
+        let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+        self.file = file
+        let capture = MicCapture { [weak self] buffer, when in
+            guard let self else { return }
+            if self.firstSampleHostTime == nil {
+                self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
+            }
+            try? file.write(from: buffer)
+        }
+        self.capture = capture
+        try capture.start()
+    }
+
+    func stop() {
+        capture?.stop()
+        capture = nil
         file = nil // closing the AVAudioFile finalises the .m4a
     }
 }
@@ -370,22 +392,24 @@ func printMicUsers() {
 
 // MARK: - Streaming dictation
 
-/// Streams the microphone (via sox `rec`) to Deepgram's live API while the user speaks, so the
-/// transcript is ready almost as soon as they stop. Run directly (not via `open`) so it shares
-/// Hammerspoon's microphone permission.
+/// Streams the microphone to Deepgram's live API while the user speaks, so the transcript is
+/// ready almost as soon as they stop. Run directly (not via `open`) so it shares Hammerspoon's
+/// microphone permission.
 ///
-///   DeepgramRecorder --stream --rec <path to rec> --url <wss://...> [--save <file.wav>]
+///   DeepgramRecorder --stream --url <wss://...> [--save <file.wav>]
 ///   (API key in the DEEPGRAM_API_KEY environment variable)
 ///
+/// Prints {"event": "listening"} once the mic delivers real audio (Bluetooth mics such as AirPods
+/// are silent for a second or two while they switch on).
 /// SIGINT: stop recording, flush, and print {"transcript": "..."} (or {"error": ..., "audio": ...}).
 /// SIGTERM: cancel immediately and print nothing.
 final class StreamSession {
-    private let recPath: String
     private let url: URL
     private let apiKey: String
     private let saveURL: URL?
     private let queue = DispatchQueue(label: "stream")
-    private var rec: Process?
+    private var capture: MicCapture?
+    private var announcedListening = false
     private var socket: URLSessionWebSocketTask?
     private var saveHandle: FileHandle?
     private var savedBytes = 0
@@ -397,8 +421,7 @@ final class StreamSession {
     private var finished = false
     private var signalSources: [DispatchSourceSignal] = []
 
-    init(recPath: String, url: URL, apiKey: String, saveURL: URL?) {
-        self.recPath = recPath
+    init(url: URL, apiKey: String, saveURL: URL?) {
         self.url = url
         self.apiKey = apiKey
         self.saveURL = saveURL
@@ -419,27 +442,31 @@ final class StreamSession {
         socket.resume()
         receive()
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: recPath)
-        process.arguments = ["-q", "-t", "raw", "-r", "16000", "-e", "signed", "-b", "16", "-c", "1", "-"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard let self else { return }
-            if data.isEmpty {
-                handle.readabilityHandler = nil
-                self.queue.async { self.audioEnded() }
-            } else {
-                self.queue.async { self.sendAudio(data) }
+        let capture = MicCapture { [weak self] buffer, _ in
+            guard let self, let samples = buffer.floatChannelData?[0] else { return }
+            var pcm = Data(count: Int(buffer.frameLength) * 2)
+            var loud = false
+            pcm.withUnsafeMutableBytes { raw in
+                let out = raw.bindMemory(to: Int16.self)
+                for i in 0..<Int(buffer.frameLength) {
+                    let v = max(-1, min(1, samples[i]))
+                    if abs(v) > 0.0005 { loud = true }
+                    out[i] = Int16(v * 32767).littleEndian
+                }
+            }
+            self.queue.async {
+                if loud && !self.announcedListening {
+                    self.announcedListening = true
+                    self.emit(["event": "listening"])
+                }
+                self.sendAudio(pcm)
             }
         }
         do {
-            try process.run()
-            rec = process
+            try capture.start()
+            self.capture = capture
         } catch {
-            output(["error": "could not start rec: \(error.localizedDescription)"])
+            output(["error": "\(error)"])
         }
     }
 
@@ -525,11 +552,14 @@ final class StreamSession {
         }
     }
 
-    private func output(_ object: [String: Any]) {
+    private func emit(_ object: [String: Any]) {
         if let data = try? JSONSerialization.data(withJSONObject: object) {
-            FileHandle.standardOutput.write(data)
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            FileHandle.standardOutput.write(data + Data("\n".utf8))
         }
+    }
+
+    private func output(_ object: [String: Any]) {
+        emit(object)
         exit(0)
     }
 
@@ -539,16 +569,11 @@ final class StreamSession {
             let source = DispatchSource.makeSignalSource(signal: sig, queue: queue)
             source.setEventHandler { [weak self] in
                 guard let self else { return }
-                if sig == SIGTERM {
-                    self.rec?.terminate()
-                    exit(0)
-                }
+                if sig == SIGTERM { exit(0) }
                 self.stopping = true
-                if let rec = self.rec, rec.isRunning {
-                    rec.interrupt() // sox flushes and exits; the pipe's EOF triggers audioEnded()
-                } else {
-                    self.audioEnded()
-                }
+                // Buffers already captured are queued ahead of this, so all audio is sent first.
+                self.capture?.stop()
+                self.queue.async { self.audioEnded() }
             }
             source.resume()
             signalSources.append(source)
@@ -569,21 +594,20 @@ final class StreamSession {
 
 func runStreamMode() -> Never {
     var args = CommandLine.arguments.dropFirst()
-    var recPath: String?, url: URL?, save: URL?
+    var url: URL?, save: URL?
     while let arg = args.popFirst() {
         switch arg {
-        case "--rec": recPath = args.popFirst()
         case "--url": url = args.popFirst().flatMap(URL.init(string:))
         case "--save": save = args.popFirst().map { URL(fileURLWithPath: $0) }
         default: break
         }
     }
     let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] ?? ""
-    guard let recPath, let url, !key.isEmpty else {
-        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream --rec PATH --url WSS_URL [--save FILE]\n".utf8))
+    guard let url, !key.isEmpty else {
+        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream --url WSS_URL [--save FILE]\n".utf8))
         exit(2)
     }
-    let session = StreamSession(recPath: recPath, url: url, apiKey: key, saveURL: save)
+    let session = StreamSession(url: url, apiKey: key, saveURL: save)
     session.start()
     dispatchMain()
 }
