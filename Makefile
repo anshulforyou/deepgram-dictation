@@ -17,7 +17,7 @@ test-install:
 
 lint:
 	$(LUACHECK) src spec
-	shellcheck install.sh uninstall.sh tests/test_install.sh
+	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh
 
 install:
 	./install.sh

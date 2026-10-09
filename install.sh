@@ -6,10 +6,13 @@
 #   ./install.sh --no-deps  skip Homebrew installs (Hammerspoon and sox must already exist)
 #
 # HAMMERSPOON_DIR overrides the target directory (default ~/.hammerspoon).
+# DEEPGRAM_DICTATION_SUPPORT_DIR overrides where DeepgramRecorder.app is built
+# (default ~/Library/Application Support/deepgram-dictation).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HS_DIR="${HAMMERSPOON_DIR:-$HOME/.hammerspoon}"
+SUPPORT_DIR="${DEEPGRAM_DICTATION_SUPPORT_DIR:-$HOME/Library/Application Support/deepgram-dictation}"
 KEYCHAIN_SERVICE="deepgram-api-key"
 MARKER="-- deepgram-dictation"
 INSTALL_DEPS=1
@@ -17,7 +20,7 @@ INSTALL_DEPS=1
 for arg in "$@"; do
   case "$arg" in
     --no-deps) INSTALL_DEPS=0 ;;
-    -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -49,6 +52,13 @@ mkdir -p "$HS_DIR"
 rm -rf "$HS_DIR/deepgram_dictation"
 cp -R "$REPO_DIR/src/deepgram_dictation" "$HS_DIR/deepgram_dictation"
 
+say "Building DeepgramRecorder.app (meeting transcription)"
+mkdir -p "$SUPPORT_DIR"
+if ! "$REPO_DIR/recorder/build.sh" "$SUPPORT_DIR"; then
+  echo "    Skipped: meeting transcription needs the Xcode Command Line Tools (xcode-select --install)." >&2
+  echo "    Dictation still works. Re-run ./install.sh after installing them." >&2
+fi
+
 if [[ ! -f "$HS_DIR/deepgram-dictionary.json" ]]; then
   cp "$REPO_DIR/dictionary.example.json" "$HS_DIR/deepgram-dictionary.json"
   say "Created $HS_DIR/deepgram-dictionary.json (edit it to add your own words)"
@@ -62,6 +72,7 @@ deepgramDictation = require("deepgram_dictation")
 deepgramDictation.start({
   -- hotkey = "fn",        -- or "rightOption", "rightCommand", "rightControl", "rightShift"
   -- language = "en",      -- or "multi" for mixed-language speech
+  -- meetingMode = "online", -- what ⌃⌥⌘M records: "online" (mic + computer audio) or "inPerson"
 })
 EOF
   say "Added deepgram-dictation to $HS_DIR/init.lua"
@@ -92,4 +103,6 @@ Done. Next steps:
      (If it was already on, quit and reopen Hammerspoon.)
   2. Hold Fn, speak, release. Allow microphone access the first time.
   3. System Settings → Keyboard → "Press 🌐 key to": set to "Do Nothing".
+  4. Meetings: press ⌃⌥⌘M (or use the 🎙 menu). The first time, allow DeepgramRecorder
+     to use the Microphone and System Audio Recording.
 EOF

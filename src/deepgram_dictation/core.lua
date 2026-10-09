@@ -14,9 +14,21 @@ core.DEFAULTS = {
   keychainName = "deepgram-api-key",
   restoreClipboard = true,
   showMenubar  = true,
+
+  -- Meeting transcription
+  meetingHotkey    = { mods = { "ctrl", "alt", "cmd" }, key = "m" }, -- toggles a meeting; false disables
+  meetingMode      = "online",  -- what the hotkey records: "online" (mic + computer audio) or "inPerson"
+  meetingLanguage  = nil,       -- defaults to `language`
+  transcriptsDir   = nil,       -- defaults to ~/Documents/Meeting Transcripts
+  keepMeetingAudio = false,     -- keep recordings after a successful transcription
+  recorderApp      = nil,       -- defaults to ~/Library/Application Support/deepgram-dictation/DeepgramRecorder.app
+  python           = nil,       -- python3 path; auto-detected when nil
 }
 
-core.OPTIONS = { recBinary = true, dictionary = true }
+core.OPTIONS = {
+  recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
+  recorderApp = true, python = true,
+}
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
 -- Hold-to-talk keys. `keyCode` is the macOS virtual key code; `flag` is the modifier flag
@@ -29,7 +41,10 @@ core.HOTKEYS = {
   rightShift   = { keyCode = 60, flag = "shift" },
 }
 
+core.MEETING_MODES = { online = true, inPerson = true }
+
 core.REC_CANDIDATES = { "/opt/homebrew/bin/rec", "/usr/local/bin/rec" }
+core.PYTHON_CANDIDATES = { "/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3" }
 
 core.API_URL = "https://api.deepgram.com/v1/listen"
 
@@ -56,12 +71,19 @@ function core.mergeConfig(overrides)
   if type(cfg.minSeconds) ~= "number" or cfg.minSeconds < 0 then
     error("deepgram-dictation: minSeconds must be a non-negative number", 2)
   end
+  if not core.MEETING_MODES[cfg.meetingMode] then
+    error("deepgram-dictation: meetingMode must be \"online\" or \"inPerson\"", 2)
+  end
+  local mh = cfg.meetingHotkey
+  if mh ~= false and (type(mh) ~= "table" or type(mh.mods) ~= "table" or type(mh.key) ~= "string") then
+    error("deepgram-dictation: meetingHotkey must be false or { mods = {...}, key = \"m\" }", 2)
+  end
   return cfg
 end
 
 -- First existing path from `candidates`, using the injected `exists(path)` predicate.
-function core.findRecBinary(exists, candidates)
-  for _, path in ipairs(candidates or core.REC_CANDIDATES) do
+function core.findExecutable(exists, candidates)
+  for _, path in ipairs(candidates) do
     if exists(path) then return path end
   end
   return nil
@@ -150,6 +172,51 @@ function core.hotkeyTransition(hotkey, keyCode, flags, active)
   if not spec or keyCode ~= spec.keyCode then return nil end
   if active then return "release" end
   return flags[spec.flag] and "press" or nil
+end
+
+-- "4:05" or "1:02:03" for an elapsed number of seconds.
+function core.formatElapsed(seconds)
+  seconds = math.max(0, math.floor(seconds))
+  local h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
+  if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
+  return string.format("%d:%02d", m, s)
+end
+
+-- Session directory name for a recording started at `t` (an os.date("*t") table).
+function core.sessionName(t)
+  return string.format("%04d-%02d-%02d_%02d-%02d-%02d", t.year, t.month, t.day, t.hour, t.min, t.sec)
+end
+
+-- Arguments for meeting_transcribe.py.
+function core.transcribeArgs(cfg, script, sessionDir, transcriptsDir, dictionary)
+  local args = {
+    script, sessionDir,
+    "--output-dir", transcriptsDir,
+    "--model", cfg.model,
+    "--language", cfg.meetingLanguage or cfg.language,
+    "--keychain-name", cfg.keychainName,
+  }
+  if dictionary then
+    table.insert(args, "--dictionary")
+    table.insert(args, dictionary)
+  end
+  if cfg.keepMeetingAudio then table.insert(args, "--keep-audio") end
+  return args
+end
+
+-- Decodes the JSON result line printed last by meeting_transcribe.py.
+-- Returns the decoded table, or nil plus an error message.
+function core.parseResultLine(stdout, decode)
+  local last
+  for line in (stdout or ""):gmatch("[^\n]+") do
+    if line:match("%S") then last = line end
+  end
+  if not last then return nil, "transcriber produced no output" end
+  local ok, result = pcall(decode, last)
+  if not ok or type(result) ~= "table" then return nil, "could not parse transcriber output" end
+  if result.error then return nil, result.error end
+  if type(result.path) ~= "string" then return nil, "transcriber did not return a file path" end
+  return result
 end
 
 return core

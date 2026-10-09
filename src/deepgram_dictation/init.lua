@@ -6,8 +6,9 @@
 --   deepgramDictation.start({ language = "en" })
 
 local core = require("deepgram_dictation.core")
+local meeting = require("deepgram_dictation.meeting")
 
-local M = { core = core }
+local M = { core = core, meeting = meeting }
 
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
@@ -117,20 +118,30 @@ end
 
 local function updateMenubar()
   if not menubar then return end
-  menubar:setTitle(enabled and "🎙" or "🎙✕")
-  local status = "Deepgram dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey .. ")"
-  menubar:setMenu({
+  menubar:setTitle(meeting.menubarTitle() or (enabled and "🎙" or "🎙✕"))
+end
+
+-- Built on every click so meeting items reflect the current state.
+local function buildMenu()
+  local status = "Dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey .. ")"
+  local items = {
     { title = status, disabled = true },
-    { title = enabled and "Disable" or "Enable", fn = function() enabled = not enabled updateMenubar() end },
-    { title = "Reload Hammerspoon config", fn = hs.reload },
-  })
+    { title = enabled and "Disable dictation" or "Enable dictation",
+      fn = function() enabled = not enabled updateMenubar() end },
+    { title = "-" },
+  }
+  for _, item in ipairs(meeting.menuItems()) do table.insert(items, item) end
+  table.insert(items, { title = "-" })
+  table.insert(items, { title = "Reload Hammerspoon config", fn = hs.reload })
+  return items
 end
 
 function M.start(overrides)
   M.stop()
   cfg = core.mergeConfig(overrides)
   dictPath = cfg.dictionary or (hs.configdir .. "/deepgram-dictionary.json")
-  recBinary = cfg.recBinary or core.findRecBinary(function(p) return hs.fs.attributes(p) ~= nil end)
+  recBinary = cfg.recBinary
+    or core.findExecutable(function(p) return hs.fs.attributes(p) ~= nil end, core.REC_CANDIDATES)
   if not recBinary then
     hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
     return M
@@ -152,8 +163,10 @@ function M.start(overrides)
 
   if cfg.showMenubar then
     menubar = hs.menubar.new()
-    updateMenubar()
+    menubar:setMenu(buildMenu)
   end
+  meeting.setup(cfg, dictPath, updateMenubar)
+  updateMenubar()
   log("ready (hotkey=%s, model=%s, language=%s)", cfg.hotkey, cfg.model, cfg.language)
   return M
 end
@@ -161,6 +174,7 @@ end
 function M.stop()
   if M.flagsTap then M.flagsTap:stop() M.flagsTap = nil end
   if M.keyTap then M.keyTap:stop() M.keyTap = nil end
+  meeting.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

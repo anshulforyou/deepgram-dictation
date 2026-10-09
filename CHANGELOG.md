@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-09
+
+### Added
+
+- Meeting transcription: record in-person meetings (mic) or online meetings (mic + computer
+  audio via a Core Audio process tap) and get a speaker-labelled Markdown transcript on the
+  clipboard and in `~/Documents/Meeting Transcripts`.
+- `DeepgramRecorder.app`, a small native recorder built by `install.sh`.
+- Echo removal when remote audio plays through the speakers.
+- Retry for failed transcriptions; recordings survive Hammerspoon reloads.
+- Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
+  `keepMeetingAudio`, `recorderApp`, `python`.
+
 ## [0.1.0] - 2026-10-09
 
 ### Added

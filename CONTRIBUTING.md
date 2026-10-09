@@ -14,6 +14,7 @@ welcome.
 ## Development setup
 
 ```sh
+xcode-select --install   # Swift compiler, for recorder/
 brew install lua@5.4 luarocks shellcheck
 luarocks --lua-version 5.4 install --local busted
 luarocks --lua-version 5.4 install --local luacheck
@@ -30,6 +31,9 @@ To try your changes live, run `./install.sh --no-deps` (it copies `src/` into
 | --- | --- |
 | `src/deepgram_dictation/core.lua` | Pure logic, with no `hs.*` calls. Put anything testable here |
 | `src/deepgram_dictation/init.lua` | Hammerspoon glue: event taps, recording, HTTP, paste |
+| `src/deepgram_dictation/meeting.lua` | Hammerspoon glue for meeting recording |
+| `src/deepgram_dictation/meeting_transcribe.py` | Meeting pipeline: Deepgram, echo removal, Markdown (stdlib only) |
+| `recorder/` | `DeepgramRecorder.app` (Swift) and its build script |
 | `spec/` | Lua unit tests ([busted](https://lunarmodules.github.io/busted/)) |
 | `scripts/import_wispr_dictionary.py` | Wispr Flow dictionary importer (stdlib only) |
 | `tests/` | Python unit tests and the install/uninstall smoke test |
@@ -51,7 +55,10 @@ CI runs the same checks on every pull request. They must pass before merging.
    **Unreleased** in `CHANGELOG.md`.
 4. Keep commits focused, with messages that explain *why*.
 5. Open the PR and fill in the template. Include manual test notes for anything in `init.lua`,
-   since that layer can only be tested by hand.
+   `meeting.lua` or `recorder/`, since those layers can only be tested by hand.
+
+Rebuilding `DeepgramRecorder.app` with changed code changes its ad-hoc signature, so macOS
+asks for Microphone and System Audio Recording permission again. That's expected.
 
 ## Reporting bugs
 

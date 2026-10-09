@@ -37,18 +37,18 @@ describe("mergeConfig", function()
   end)
 end)
 
-describe("findRecBinary", function()
+describe("findExecutable", function()
   it("returns the first existing candidate", function()
     local exists = function(p) return p == "/usr/local/bin/rec" end
-    assert.are.equal("/usr/local/bin/rec", core.findRecBinary(exists))
+    assert.are.equal("/usr/local/bin/rec", core.findExecutable(exists, core.REC_CANDIDATES))
   end)
 
   it("prefers earlier candidates", function()
-    assert.are.equal("/opt/homebrew/bin/rec", core.findRecBinary(function() return true end))
+    assert.are.equal("/opt/homebrew/bin/rec", core.findExecutable(function() return true end, core.REC_CANDIDATES))
   end)
 
   it("returns nil when nothing exists", function()
-    assert.is_nil(core.findRecBinary(function() return false end))
+    assert.is_nil(core.findExecutable(function() return false end, core.REC_CANDIDATES))
   end)
 end)
 
@@ -187,5 +187,94 @@ describe("hotkeyTransition", function()
 
   it("ignores a stray flag-less event while idle", function()
     assert.is_nil(core.hotkeyTransition("fn", 63, {}, false))
+  end)
+end)
+
+describe("meeting config", function()
+  it("has meeting defaults", function()
+    local cfg = core.mergeConfig()
+    assert.are.equal("online", cfg.meetingMode)
+    assert.are.same({ "ctrl", "alt", "cmd" }, cfg.meetingHotkey.mods)
+    assert.is_false(cfg.keepMeetingAudio)
+  end)
+
+  it("accepts inPerson mode, a custom hotkey, or no hotkey", function()
+    assert.are.equal("inPerson", core.mergeConfig({ meetingMode = "inPerson" }).meetingMode)
+    assert.are.equal("t", core.mergeConfig({ meetingHotkey = { mods = { "cmd" }, key = "t" } }).meetingHotkey.key)
+    assert.is_false(core.mergeConfig({ meetingHotkey = false }).meetingHotkey)
+  end)
+
+  it("accepts optional meeting paths", function()
+    local cfg = core.mergeConfig({
+      transcriptsDir = "/t", recorderApp = "/r.app", python = "/p", meetingLanguage = "hi",
+    })
+    assert.are.equal("/t", cfg.transcriptsDir)
+    assert.are.equal("hi", cfg.meetingLanguage)
+  end)
+
+  it("rejects invalid meeting options", function()
+    assert.has_error(function() core.mergeConfig({ meetingMode = "zoom" }) end)
+    assert.has_error(function() core.mergeConfig({ meetingHotkey = "cmd+m" }) end)
+    assert.has_error(function() core.mergeConfig({ meetingHotkey = { mods = { "cmd" } } }) end)
+  end)
+end)
+
+describe("formatElapsed", function()
+  it("formats minutes and hours", function()
+    assert.are.equal("0:00", core.formatElapsed(0))
+    assert.are.equal("4:05", core.formatElapsed(245.9))
+    assert.are.equal("1:02:03", core.formatElapsed(3723))
+  end)
+
+  it("clamps negatives to zero", function()
+    assert.are.equal("0:00", core.formatElapsed(-3))
+  end)
+end)
+
+describe("sessionName", function()
+  it("is sortable and filesystem-safe", function()
+    local name = core.sessionName({ year = 2026, month = 10, day = 9, hour = 7, min = 5, sec = 3 })
+    assert.are.equal("2026-10-09_07-05-03", name)
+  end)
+end)
+
+describe("transcribeArgs", function()
+  it("passes model, language and keychain name", function()
+    local args = core.transcribeArgs(core.mergeConfig(), "s.py", "/sess", "/out", nil)
+    assert.are.same({ "s.py", "/sess", "--output-dir", "/out", "--model", "nova-3",
+                      "--language", "en", "--keychain-name", "deepgram-api-key" }, args)
+  end)
+
+  it("prefers meetingLanguage and adds dictionary and keep-audio flags", function()
+    local cfg = core.mergeConfig({ language = "en", meetingLanguage = "multi", keepMeetingAudio = true })
+    local args = core.transcribeArgs(cfg, "s.py", "/sess", "/out", "/d.json")
+    assert.are.equal("multi", args[8])
+    assert.are.same({ "--dictionary", "/d.json", "--keep-audio" }, { args[11], args[12], args[13] })
+  end)
+end)
+
+describe("parseResultLine", function()
+  local function decode(s)
+    if s == '{"path":"/x.md"}' then return { path = "/x.md" } end
+    if s == '{"error":"boom"}' then return { error = "boom" } end
+    if s == "{}" then return {} end
+    error("bad json")
+  end
+
+  it("returns the decoded last non-empty line", function()
+    local result = core.parseResultLine('log line\n{"path":"/x.md"}\n\n', decode)
+    assert.are.equal("/x.md", result.path)
+  end)
+
+  it("surfaces transcriber errors", function()
+    local result, err = core.parseResultLine('{"error":"boom"}', decode)
+    assert.is_nil(result)
+    assert.are.equal("boom", err)
+  end)
+
+  it("handles empty, malformed and incomplete output", function()
+    assert.are.equal("transcriber produced no output", select(2, core.parseResultLine("", decode)))
+    assert.are.equal("could not parse transcriber output", select(2, core.parseResultLine("nope", decode)))
+    assert.are.equal("transcriber did not return a file path", select(2, core.parseResultLine("{}", decode)))
   end)
 end)

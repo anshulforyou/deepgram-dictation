@@ -14,8 +14,11 @@ within 7 days.
 Things we especially care about:
 
 - the Deepgram API key leaking (to logs, files, process arguments, or other hosts)
-- audio or transcripts being kept on disk or sent anywhere other than Deepgram
-- the installer or uninstaller modifying files outside `~/.hammerspoon`
+- audio or transcripts being kept on disk longer than documented, or sent anywhere other than
+  Deepgram
+- `DeepgramRecorder.app` capturing audio when no recording was started
+- the installer or uninstaller modifying files outside `~/.hammerspoon` and
+  `~/Library/Application Support/deepgram-dictation`
 
 ## Handling your API key
 

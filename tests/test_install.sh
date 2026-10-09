@@ -5,7 +5,9 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HAMMERSPOON_DIR="$(mktemp -d)"
 export HAMMERSPOON_DIR
-trap 'rm -rf "$HAMMERSPOON_DIR"' EXIT
+DEEPGRAM_DICTATION_SUPPORT_DIR="$(mktemp -d)"
+export DEEPGRAM_DICTATION_SUPPORT_DIR
+trap 'rm -rf "$HAMMERSPOON_DIR" "$DEEPGRAM_DICTATION_SUPPORT_DIR"' EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -17,6 +19,10 @@ echo '{"keyterms":["Mine"],"replacements":[]}' > "$HAMMERSPOON_DIR/deepgram-dict
 
 [[ -f "$HAMMERSPOON_DIR/deepgram_dictation/init.lua" ]] || fail "module not installed"
 [[ -f "$HAMMERSPOON_DIR/deepgram_dictation/core.lua" ]] || fail "core not installed"
+[[ -f "$HAMMERSPOON_DIR/deepgram_dictation/meeting_transcribe.py" ]] || fail "transcriber not installed"
+[[ -x "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app/Contents/MacOS/DeepgramRecorder" ]] \
+  || fail "recorder not built"
+codesign --verify "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app" || fail "recorder not signed"
 grep -q '"Mine"' "$HAMMERSPOON_DIR/deepgram-dictionary.json" || fail "existing dictionary overwritten"
 grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "existing init.lua lost"
 [[ $(grep -c 'require("deepgram_dictation")' "$HAMMERSPOON_DIR/init.lua") -eq 1 ]] || fail "init block not added exactly once"
@@ -24,6 +30,7 @@ grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "existing init.lua
 "$REPO_DIR/uninstall.sh" > /dev/null
 
 [[ ! -e "$HAMMERSPOON_DIR/deepgram_dictation" ]] || fail "module not removed"
+[[ ! -e "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app" ]] || fail "recorder not removed"
 ! grep -q 'deepgram' "$HAMMERSPOON_DIR/init.lua" || fail "init block not removed"
 grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "uninstall removed unrelated config"
 [[ -f "$HAMMERSPOON_DIR/deepgram-dictionary.json" ]] || fail "dictionary removed without --purge"
