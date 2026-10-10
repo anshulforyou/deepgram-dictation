@@ -35,7 +35,8 @@ To try your changes live, run `./install.sh --no-deps` (it copies `src/` into
 | `src/deepgram_dictation/meeting_transcribe.py` | Meeting pipeline: Deepgram, echo removal, Markdown (stdlib only) |
 | `src/deepgram_dictation/meeting_organize.py` | Filing transcripts with the Claude Code CLI, `meetings.md` indexes |
 | `src/deepgram_dictation/detector.lua`, `prompt.lua` | Meeting detection and the "Transcribe this meeting?" card |
-| `recorder/` | `DeepgramRecorder.app` (Swift) and its build script |
+| `recorder/` | `DeepgramRecorder.app` (Swift): `main.swift` (audio), `Logic.swift` (pure, unit tested in `recorder/Tests`) |
+| `tests/integration/` | Manual end-to-end test with a simulated call app |
 | `spec/` | Lua unit tests ([busted](https://lunarmodules.github.io/busted/)) |
 | `scripts/import_wispr_dictionary.py` | Wispr Flow dictionary importer (stdlib only) |
 | `tests/` | Python unit tests and the install/uninstall smoke test |
@@ -43,9 +44,16 @@ To try your changes live, run `./install.sh --no-deps` (it copies `src/` into
 ## Checks
 
 ```sh
-make lint   # luacheck + shellcheck
-make test   # Lua specs, Python tests, install smoke test
+make lint              # luacheck + shellcheck
+make test              # Lua specs, Python tests, Swift recorder tests, install smoke test
+make test-integration  # on a Mac only: a simulated call app + a real recording (see below)
 ```
+
+`make test-integration` needs Hammerspoon running with microphone access. It simulates a call
+app holding the mic in voice-processing mode, records an online and an in-person meeting next to
+it, and fails if the call app loses its audio, our mic track is silent, the computer-audio track
+is incomplete, or the recorder uses too much CPU. Run it with each mic you care about (built-in,
+AirPods) selected as the input, especially after changing anything in `recorder/`.
 
 CI runs the same checks on every pull request. They must pass before merging.
 

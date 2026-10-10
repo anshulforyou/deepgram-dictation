@@ -54,32 +54,23 @@ final class StatusWriter {
 
 // MARK: - Microphone
 
-/// Captures the default input device as 16 kHz mono Float32 buffers. Re-taps when the input
-/// device changes mid-capture (e.g. AirPods connecting). Only the input node is used: touching
-/// the engine's output side makes it pair the mic with the speakers in an aggregate device,
-/// which can deliver no input at all.
+/// Captures the default input device as 16 kHz mono Float32 buffers. Re-taps when the input device changes mid-capture (e.g. AirPods connecting). Only
+/// the input node is used: touching the engine's output side makes it pair the mic with the
+/// speakers in an aggregate device, which can deliver no input at all.
 ///
-/// `voiceProcessing` turns on Apple's call mode (echo cancellation). It's needed while a call app
-/// (Meet, Zoom, ...) uses the mic in that mode: macOS then gives plain captures pure silence.
+/// Never enable voice processing here: when a call app holds the same mic in that mode, it
+/// knocks out the call app's audio.
 final class MicCapture {
     static let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     private let engine = AVAudioEngine()
-    private let voiceProcessing: Bool
     private var observer: NSObjectProtocol?
     private let onBuffer: (AVAudioPCMBuffer, AVAudioTime) -> Void
 
-    init(voiceProcessing: Bool = false, onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
-        self.voiceProcessing = voiceProcessing
+    init(onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
         self.onBuffer = onBuffer
     }
 
     func start() throws {
-        if voiceProcessing {
-            try engine.inputNode.setVoiceProcessingEnabled(true)
-            // Don't turn down the meeting audio the user is listening to.
-            engine.inputNode.voiceProcessingOtherAudioDuckingConfiguration =
-                AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
-        }
         try installTap()
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
@@ -100,19 +91,23 @@ final class MicCapture {
     private func installTap() throws {
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         let format = Self.format
+        // Multi-channel inputs (the MacBook mic array reports 3 channels, AirPods 9, whenever a call
+        // app uses voice processing) must not go through AVAudioConverter's downmix: it outputs
+        // pure zeros for them. Take the first channel instead; the channels carry the same voice.
         guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
-              let converter = AVAudioConverter(from: inputFormat, to: format) else {
+              let monoInput = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: inputFormat.sampleRate,
+                                            channels: 1, interleaved: false),
+              let converter = AVAudioConverter(from: monoInput, to: format) else {
             throw RecorderError("no microphone input available (is Microphone permission granted?)")
-        }
-        if voiceProcessing && inputFormat.channelCount > 1 {
-            converter.channelMap = [0] // call mode reports several copies of the same mono signal
-        } else {
-            converter.downmix = true
         }
         let ratio = format.sampleRate / inputFormat.sampleRate
         let onBuffer = self.onBuffer
 
-        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, when in
+        engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { input, when in
+            guard let channels = input.floatChannelData,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: monoInput, frameCapacity: input.frameLength) else { return }
+            buffer.frameLength = input.frameLength
+            buffer.floatChannelData![0].update(from: channels[0], count: Int(input.frameLength))
             let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
             guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
             var supplied = false
@@ -137,13 +132,15 @@ final class MicCapture {
     }
 }
 
-/// Records the microphone to a 16 kHz mono AAC file.
+/// Records the microphone to a 16 kHz mono AAC file. `onBlocked` is called (once, on an audio
+/// thread) if the mic delivers only digital silence for a while, i.e. another app blocks it.
 final class MicRecorder {
     private var capture: MicCapture?
     private var file: AVAudioFile?
+    private var watchdog = SilenceWatchdog()
     private(set) var firstSampleHostTime: Double?
 
-    func start(url: URL, voiceProcessing: Bool) throws {
+    func start(url: URL, onBlocked: @escaping () -> Void) throws {
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: 16000,
@@ -151,12 +148,17 @@ final class MicRecorder {
         ]
         let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         self.file = file
-        let capture = MicCapture(voiceProcessing: voiceProcessing) { [weak self] buffer, when in
+        let capture = MicCapture { [weak self] buffer, when in
             guard let self else { return }
             if self.firstSampleHostTime == nil {
                 self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
             }
             try? file.write(from: buffer)
+            if let data = buffer.floatChannelData,
+               self.watchdog.feed(samples: UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength)),
+                                  sampleRate: buffer.format.sampleRate) {
+                onBlocked()
+            }
         }
         self.capture = capture
         try capture.start()
@@ -276,6 +278,7 @@ final class Session {
     let mic = MicRecorder()
     let system = SystemAudioRecorder()
     var startHostTime = 0.0
+    var warnings: [String] = []
     var signalSources: [DispatchSourceSignal] = []
     var stopped = false
 
@@ -309,8 +312,9 @@ final class Session {
     private func begin() {
         startHostTime = nowHostSeconds()
         do {
-            // Online meetings: the call app holds the mic in call mode, so match it.
-            try mic.start(url: dir.appendingPathComponent("mic.m4a"), voiceProcessing: captureSystem)
+            try mic.start(url: dir.appendingPathComponent("mic.m4a")) { [weak self] in
+                DispatchQueue.main.async { self?.micBlocked() }
+            }
         } catch {
             return fail("Microphone: \(error)")
         }
@@ -322,11 +326,18 @@ final class Session {
                 warnings.append("Computer audio not captured: \(error)")
             }
         }
+        self.warnings = warnings
         status.update([
             "state": "recording",
             "startedAt": ISO8601DateFormatter().string(from: Date()),
             "warnings": warnings,
         ])
+    }
+
+    private func micBlocked() {
+        warnings.append("Your microphone delivered no sound (another app, such as the call, was blocking it), "
+            + "so your own voice may be missing.")
+        status.update(["warnings": warnings])
     }
 
     private func installSignalHandlers() {
@@ -446,7 +457,7 @@ final class StreamSession {
     func start() {
         installSignalHandlers()
         if let saveURL {
-            FileManager.default.createFile(atPath: saveURL.path, contents: Self.wavHeader(dataBytes: 0))
+            FileManager.default.createFile(atPath: saveURL.path, contents: WAV.header(dataBytes: 0))
             saveHandle = try? FileHandle(forWritingTo: saveURL)
             saveHandle?.seekToEndOfFile()
         }
@@ -459,17 +470,10 @@ final class StreamSession {
         receive()
 
         let capture = MicCapture { [weak self] buffer, _ in
-            guard let self, let samples = buffer.floatChannelData?[0] else { return }
-            var pcm = Data(count: Int(buffer.frameLength) * 2)
-            var loud = false
-            pcm.withUnsafeMutableBytes { raw in
-                let out = raw.bindMemory(to: Int16.self)
-                for i in 0..<Int(buffer.frameLength) {
-                    let v = max(-1, min(1, samples[i]))
-                    if abs(v) > 0.0005 { loud = true }
-                    out[i] = Int16(v * 32767).littleEndian
-                }
-            }
+            guard let self, let data = buffer.floatChannelData else { return }
+            let samples = UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength))
+            let pcm = PCM.int16Data(samples)
+            let loud = PCM.hasSignal(samples)
             self.queue.async {
                 if loud && !self.announcedListening {
                     self.announcedListening = true
@@ -534,15 +538,18 @@ final class StreamSession {
         }
         // Done once results cover all the audio we sent (Finalize can answer before Deepgram has
         // processed audio that arrived in a burst, so its reply alone isn't enough).
-        if let audioSeconds, transcribedUntil >= audioSeconds - 0.1 { finish() }
+        if let audioSeconds, StreamCompletion.isComplete(transcribedUntil: transcribedUntil, audioSeconds: audioSeconds) {
+            finish()
+        }
     }
 
     /// The recorder has exited and all audio has been sent: ask Deepgram for the remaining results.
     private func audioEnded() {
         guard stopping, !finished else { return }
         if socketError != nil { return finish() }
-        audioSeconds = Double(savedBytes) / 32000
-        if transcribedUntil >= audioSeconds! - 0.1 { return finish() }
+        let seconds = Double(savedBytes) / 32000
+        audioSeconds = seconds
+        if StreamCompletion.isComplete(transcribedUntil: transcribedUntil, audioSeconds: seconds) { return finish() }
         socket?.send(.string(#"{"type":"Finalize"}"#)) { _ in }
         // Backup: CloseStream makes Deepgram flush everything, send Metadata and close.
         queue.asyncAfter(deadline: .now() + 1.5) { [weak self] in
@@ -557,7 +564,7 @@ final class StreamSession {
         finished = true
         if let saveHandle {
             saveHandle.seek(toFileOffset: 0)
-            saveHandle.write(Self.wavHeader(dataBytes: savedBytes))
+            saveHandle.write(WAV.header(dataBytes: savedBytes))
             try? saveHandle.close()
         }
         socket?.cancel(with: .normalClosure, reason: nil)
@@ -594,17 +601,6 @@ final class StreamSession {
             source.resume()
             signalSources.append(source)
         }
-    }
-
-    /// 44-byte header for 16 kHz mono 16-bit PCM.
-    static func wavHeader(dataBytes: Int) -> Data {
-        var header = Data()
-        func append<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) } }
-        header.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + dataBytes))
-        header.append(contentsOf: Array("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))
-        append(UInt32(16000)); append(UInt32(32000)); append(UInt16(2)); append(UInt16(16))
-        header.append(contentsOf: Array("data".utf8)); append(UInt32(dataBytes))
-        return header
     }
 }
 

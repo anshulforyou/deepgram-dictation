@@ -407,6 +407,11 @@ describe("noSpeechHint", function()
       core.noSpeechHint("MacBook Pro Microphone", 80, 0.01))
   end)
 
+  it("says so when the mic delivered pure digital silence", function()
+    assert.are.equal("AirPods Pro delivered no sound at all. Another app may be blocking it.",
+      core.noSpeechHint("AirPods Pro", 80, 0))
+  end)
+
   it("gives no hint when the mic level was fine or unknown", function()
     assert.is_nil(core.noSpeechHint("AirPods Pro", 27, 0.4))
     assert.is_nil(core.noSpeechHint("AirPods Pro", 27, nil))

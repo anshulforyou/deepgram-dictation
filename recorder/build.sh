@@ -14,7 +14,7 @@ if ! xcrun --find swiftc >/dev/null 2>&1; then
   exit 1
 fi
 
-HASH="$(cat "$SRC_DIR/main.swift" "$SRC_DIR/Info.plist" | shasum -a 256 | cut -d' ' -f1)"
+HASH="$(cat "$SRC_DIR/main.swift" "$SRC_DIR/Logic.swift" "$SRC_DIR/Info.plist" | shasum -a 256 | cut -d' ' -f1)"
 if [[ -f "$STAMP" && "$(cat "$STAMP")" == "$HASH" ]]; then
   echo "DeepgramRecorder.app is up to date"
   exit 0
@@ -24,7 +24,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC_DIR/Info.plist" "$APP/Contents/Info.plist"
 xcrun swiftc -O -swift-version 5 -target "$(uname -m)-apple-macos14.2" \
-  -o "$APP/Contents/MacOS/DeepgramRecorder" "$SRC_DIR/main.swift"
+  -o "$APP/Contents/MacOS/DeepgramRecorder" "$SRC_DIR/main.swift" "$SRC_DIR/Logic.swift"
 echo "$HASH" > "$STAMP"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || { echo "codesign failed" >&2; exit 1; }
 echo "Built $APP"

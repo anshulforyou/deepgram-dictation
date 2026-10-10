@@ -133,9 +133,7 @@ Yes, loud and clear. Let's start with the launch plan.
 
 Good to know:
 
-- In online meetings the mic is recorded in Apple's voice-processing ("call") mode, the same mode
-  Meet and Zoom use. macOS silences plain recordings of a mic that a call app holds in that
-  mode. Echo cancellation is a side benefit.
+- Recording never interferes with the call app's microphone, and uses about 1-2% of one CPU core.
 - **No headphones?** Your mic also hears the remote people through the speakers. Those
   duplicate lines are detected and removed automatically.
 - **Nothing is lost if something fails.** Recordings are kept until a transcript is saved. Use

@@ -252,6 +252,9 @@ end
 -- Explains a "No speech detected" result when the microphone looks like the cause.
 -- `peak` is 0..1 (or nil), `volume` the input volume in percent (or nil).
 function core.noSpeechHint(deviceName, volume, peak)
+  if peak == 0 then
+    return string.format("%s delivered no sound at all. Another app may be blocking it.", deviceName or "The mic")
+  end
   local quiet = peak and peak < 0.03
   if not quiet then return nil end
   local hint = string.format("Mic level very low (%s", deviceName or "input")

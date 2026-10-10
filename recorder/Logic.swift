@@ -1,0 +1,75 @@
+// Pure decision logic for DeepgramRecorder, kept free of audio APIs so it can be unit tested
+// (recorder/Tests). Compiled together with main.swift.
+
+import Foundation
+
+/// Detects a microphone that delivers only digital zeros: real microphones always have some
+/// noise, so long runs of exact zeros mean the audio is being lost (blocked input, a broken
+/// conversion, ...). Used to warn in the transcript instead of silently dropping the user's voice.
+struct SilenceWatchdog {
+    let threshold: Double          // seconds of continuous digital silence before reporting
+    private(set) var silentSeconds = 0.0
+    private(set) var heardAudio = false
+    private(set) var tripped = false
+
+    init(threshold: Double = 10) { self.threshold = threshold }
+
+    /// Feeds one buffer; returns true exactly once, when the threshold is first crossed.
+    mutating func feed(samples: UnsafeBufferPointer<Float>, sampleRate: Double) -> Bool {
+        let allZero = samples.allSatisfy { $0 == 0 }
+        if !allZero {
+            heardAudio = true
+            silentSeconds = 0
+            return false
+        }
+        silentSeconds += Double(samples.count) / sampleRate
+        if !tripped && silentSeconds >= threshold {
+            tripped = true
+            return true
+        }
+        return false
+    }
+}
+
+enum StreamCompletion {
+    /// Whether Deepgram's final results cover all the audio sent (within `tolerance` seconds).
+    /// Finalize can be answered before Deepgram has processed audio that arrived in a burst, so
+    /// the reply alone doesn't mean the transcript is complete.
+    static func isComplete(transcribedUntil: Double, audioSeconds: Double, tolerance: Double = 0.1) -> Bool {
+        transcribedUntil >= audioSeconds - tolerance
+    }
+}
+
+enum WAV {
+    /// 44-byte header for 16-bit mono PCM.
+    static func header(dataBytes: Int, sampleRate: Int = 16000) -> Data {
+        var header = Data()
+        func append<T: FixedWidthInteger>(_ value: T) {
+            withUnsafeBytes(of: value.littleEndian) { header.append(contentsOf: $0) }
+        }
+        header.append(contentsOf: Array("RIFF".utf8)); append(UInt32(36 + dataBytes))
+        header.append(contentsOf: Array("WAVEfmt ".utf8)); append(UInt32(16)); append(UInt16(1)); append(UInt16(1))
+        append(UInt32(sampleRate)); append(UInt32(sampleRate * 2)); append(UInt16(2)); append(UInt16(16))
+        header.append(contentsOf: Array("data".utf8)); append(UInt32(dataBytes))
+        return header
+    }
+}
+
+enum PCM {
+    /// Converts Float32 samples to little-endian Int16 bytes, clamping to [-1, 1].
+    static func int16Data(_ samples: UnsafeBufferPointer<Float>) -> Data {
+        var data = Data(count: samples.count * 2)
+        data.withUnsafeMutableBytes { raw in
+            let out = raw.bindMemory(to: Int16.self)
+            for (i, sample) in samples.enumerated() {
+                out[i] = Int16(max(-1, min(1, sample)) * 32767).littleEndian
+            }
+        }
+        return data
+    }
+
+    /// Whether any sample is above the noise threshold (used to tell when a Bluetooth mic is live).
+    static func hasSignal(_ samples: UnsafeBufferPointer<Float>, threshold: Float = 0.0005) -> Bool {
+        samples.contains { abs($0) > threshold }
+    }
+}

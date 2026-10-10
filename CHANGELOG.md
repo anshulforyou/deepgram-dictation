@@ -29,8 +29,12 @@ All notable changes to this project are documented here. The format follows
   AirPods; sox is now only used when streaming is off. Shows "🎧 Connecting mic…" until a
   Bluetooth mic is actually live.
 - "No speech detected" explains when the mic level was very low.
-- Online meetings record the mic in voice-processing mode: while a call app holds the mic in that
-  mode, macOS gave the recorder pure silence, so your own voice was missing from transcripts.
+- Fixed your own voice missing from online-meeting transcripts (and some "No speech detected"):
+  while a call app is active the mic reports several channels (MacBook mic array: 3, AirPods: 9),
+  and AVAudioConverter's downmix turned those into pure zeros. The recorder now takes the first
+  channel. A watchdog notes in the transcript if the mic ever delivers only digital silence.
+- The recorder never uses voice processing: enabling it alongside a call app cut off the call
+  app's microphone. CPU use while recording dropped from ~12-17% to ~1-2% of one core.
 - "File N unfiled transcripts with Claude" menu item and `meeting_transcribe.py --refile`, for
   transcripts made while Claude was unavailable.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,

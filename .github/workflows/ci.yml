@@ -35,5 +35,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: command -v shellcheck || brew install shellcheck
-      - run: shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh
+      - run: shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh tests/integration/mic_coexistence.sh
+      - run: recorder/test.sh
       - run: tests/test_install.sh
