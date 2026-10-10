@@ -6,8 +6,10 @@
 --   deepgramDictation.start({ language = "en" })
 
 local core = require("deepgram_dictation.core")
+local meeting = require("deepgram_dictation.meeting")
+local detector = require("deepgram_dictation.detector")
 
-local M = { core = core }
+local M = { core = core, meeting = meeting }
 
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
@@ -87,10 +89,80 @@ local function transcribe()
   end)
 end
 
+-- "No speech detected", plus a hint when the recording was nearly silent (e.g. a quiet AirPods mic).
+local function alertNoSpeech()
+  local f = io.open(audioPath, "rb")
+  local peak = f and core.wavPeak(f:read("a"))
+  if f then f:close() end
+  local device = hs.audiodevice.defaultInputDevice()
+  local hint = core.noSpeechHint(device and device:name(), device and device:inputVolume(), peak)
+  if hint then log("no speech: %s (peak %.4f)", hint, peak) end
+  hs.alert.show("No speech detected" .. (hint and ("\n" .. hint) or ""), hint and 5 or 1)
+end
+
+local function finishStreaming(stdout, dict)
+  if not sendOnExit then
+    os.remove(audioPath)
+    setIndicator(nil)
+    return
+  end
+  local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
+  if type(result.transcript) == "string" then
+    setIndicator(nil)
+    if result.transcript == "" then alertNoSpeech() end
+    os.remove(audioPath)
+    if result.transcript ~= "" then
+      pasteText(core.applyReplacements(result.transcript, dict.replacements))
+    end
+  else
+    -- Streaming failed (e.g. network blip): upload the saved recording instead.
+    log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
+    transcribe()
+  end
+end
+
+-- Streams audio to Deepgram while the key is held (much faster than uploading afterwards).
+local function startStreaming(helper)
+  local key = getApiKey()
+  if not key then
+    hs.alert.show("Deepgram API key not found in Keychain ('" .. cfg.keychainName .. "')")
+    return
+  end
+  local dict = loadDictionary()
+  local output, live = "", false
+  recorder = hs.task.new(helper, function(_, stdout)
+    recorder = nil
+    finishStreaming(output .. (stdout or ""), dict)
+  end, function(_, stdout)
+    output = output .. (stdout or "")
+    -- Bluetooth mics (AirPods) take a moment to switch on; say when they're actually live.
+    if not live and recorder and not sendOnExit and output:find('"event":"listening"', 1, true) then
+      live = true
+      setIndicator("🎙 Listening…")
+    end
+    return true
+  end, { "--stream", "--url", core.buildStreamUrl(cfg, dict.keyterms), "--save", audioPath })
+  recorder:setEnvironment({
+    DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
+  })
+  if not recorder:start() then
+    recorder = nil
+    hs.alert.show("Could not start recording, see Hammerspoon console")
+    return
+  end
+  setIndicator("🎧 Connecting mic…")
+end
+
 local function startRecording()
   os.remove(audioPath)
   cancelled, sendOnExit = false, false
   startedAt = hs.timer.secondsSinceEpoch()
+  local helper = meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder"
+  if cfg.streaming and hs.fs.attributes(helper) then return startStreaming(helper) end
+  if not recBinary then
+    hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
+    return
+  end
   recorder = hs.task.new(recBinary, function()
     recorder = nil
     if sendOnExit then
@@ -112,29 +184,41 @@ local function stopRecording()
   if not recorder then return end
   local duration = hs.timer.secondsSinceEpoch() - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
-  recorder:interrupt() -- SIGINT lets sox finalise the WAV header before exiting
+  if sendOnExit then
+    setIndicator("⏳ Transcribing…")
+    recorder:interrupt() -- SIGINT: sox finalises the WAV / the streamer flushes Deepgram's results
+  else
+    recorder:terminate() -- SIGTERM: discard
+  end
 end
 
 local function updateMenubar()
   if not menubar then return end
-  menubar:setTitle(enabled and "🎙" or "🎙✕")
-  local status = "Deepgram dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey .. ")"
-  menubar:setMenu({
+  menubar:setTitle(meeting.menubarTitle() or (enabled and "🎙" or "🎙✕"))
+end
+
+-- Built on every click so meeting items reflect the current state.
+local function buildMenu()
+  local status = "Dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey .. ")"
+  local items = {
     { title = status, disabled = true },
-    { title = enabled and "Disable" or "Enable", fn = function() enabled = not enabled updateMenubar() end },
-    { title = "Reload Hammerspoon config", fn = hs.reload },
-  })
+    { title = enabled and "Disable dictation" or "Enable dictation",
+      fn = function() enabled = not enabled updateMenubar() end },
+    { title = "-" },
+  }
+  for _, item in ipairs(meeting.menuItems()) do table.insert(items, item) end
+  table.insert(items, { title = "-" })
+  table.insert(items, { title = "Reload Hammerspoon config", fn = hs.reload })
+  return items
 end
 
 function M.start(overrides)
   M.stop()
   cfg = core.mergeConfig(overrides)
   dictPath = cfg.dictionary or (hs.configdir .. "/deepgram-dictionary.json")
-  recBinary = cfg.recBinary or core.findRecBinary(function(p) return hs.fs.attributes(p) ~= nil end)
-  if not recBinary then
-    hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
-    return M
-  end
+  -- sox is only needed when streaming is off or DeepgramRecorder.app isn't built.
+  recBinary = cfg.recBinary
+    or core.findExecutable(function(p) return hs.fs.attributes(p) ~= nil end, core.REC_CANDIDATES)
 
   M.flagsTap = hs.eventtap.new({ hs.eventtap.event.types.flagsChanged }, function(e)
     if not enabled then return false end
@@ -151,9 +235,21 @@ function M.start(overrides)
   end):start()
 
   if cfg.showMenubar then
-    menubar = hs.menubar.new()
-    updateMenubar()
+    -- The autosave name keeps the icon where you ⌘-drag it across reloads.
+    menubar = hs.menubar.new(true, "deepgram-dictation")
+    menubar:setMenu(buildMenu)
   end
+  -- Opens the same menu at the mouse pointer, for when the menu bar icon is hidden (e.g. by the notch).
+  if cfg.menuHotkey then
+    M.popup = hs.menubar.new(false)
+    M.menuHotkey = hs.hotkey.bind(cfg.menuHotkey.mods, cfg.menuHotkey.key, function()
+      M.popup:setMenu(buildMenu())
+      M.popup:popupMenu(hs.mouse.absolutePosition(), true)
+    end)
+  end
+  meeting.setup(cfg, dictPath, updateMenubar)
+  detector.setup(cfg, meeting)
+  updateMenubar()
   log("ready (hotkey=%s, model=%s, language=%s)", cfg.hotkey, cfg.model, cfg.language)
   return M
 end
@@ -161,6 +257,10 @@ end
 function M.stop()
   if M.flagsTap then M.flagsTap:stop() M.flagsTap = nil end
   if M.keyTap then M.keyTap:stop() M.keyTap = nil end
+  detector.teardown()
+  meeting.teardown()
+  if M.menuHotkey then M.menuHotkey:delete() M.menuHotkey = nil end
+  if M.popup then M.popup:delete() M.popup = nil end
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

@@ -14,6 +14,7 @@ welcome.
 ## Development setup
 
 ```sh
+xcode-select --install   # Swift compiler, for recorder/
 brew install lua@5.4 luarocks shellcheck
 luarocks --lua-version 5.4 install --local busted
 luarocks --lua-version 5.4 install --local luacheck
@@ -30,6 +31,12 @@ To try your changes live, run `./install.sh --no-deps` (it copies `src/` into
 | --- | --- |
 | `src/deepgram_dictation/core.lua` | Pure logic, with no `hs.*` calls. Put anything testable here |
 | `src/deepgram_dictation/init.lua` | Hammerspoon glue: event taps, recording, HTTP, paste |
+| `src/deepgram_dictation/meeting.lua` | Hammerspoon glue for meeting recording |
+| `src/deepgram_dictation/meeting_transcribe.py` | Meeting pipeline: Deepgram, echo removal, Markdown (stdlib only) |
+| `src/deepgram_dictation/meeting_organize.py` | Filing transcripts with the Claude Code CLI, `meetings.md` indexes |
+| `src/deepgram_dictation/detector.lua`, `prompt.lua` | Meeting detection and the "Transcribe this meeting?" card |
+| `recorder/` | `DeepgramRecorder.app` (Swift): `main.swift` (audio), `Logic.swift` (pure, unit tested in `recorder/Tests`) |
+| `tests/integration/` | Manual end-to-end test with a simulated call app |
 | `spec/` | Lua unit tests ([busted](https://lunarmodules.github.io/busted/)) |
 | `scripts/import_wispr_dictionary.py` | Wispr Flow dictionary importer (stdlib only) |
 | `tests/` | Python unit tests and the install/uninstall smoke test |
@@ -37,9 +44,16 @@ To try your changes live, run `./install.sh --no-deps` (it copies `src/` into
 ## Checks
 
 ```sh
-make lint   # luacheck + shellcheck
-make test   # Lua specs, Python tests, install smoke test
+make lint              # luacheck + shellcheck
+make test              # Lua specs, Python tests, Swift recorder tests, install smoke test
+make test-integration  # on a Mac only: a simulated call app + a real recording (see below)
 ```
+
+`make test-integration` needs Hammerspoon running with microphone access. It simulates a call
+app holding the mic in voice-processing mode, records an online and an in-person meeting next to
+it, and fails if the call app loses its audio, our mic track is silent, the computer-audio track
+is incomplete, or the recorder uses too much CPU. Run it with each mic you care about (built-in,
+AirPods) selected as the input, especially after changing anything in `recorder/`.
 
 CI runs the same checks on every pull request. They must pass before merging.
 
@@ -51,7 +65,14 @@ CI runs the same checks on every pull request. They must pass before merging.
    **Unreleased** in `CHANGELOG.md`.
 4. Keep commits focused, with messages that explain *why*.
 5. Open the PR and fill in the template. Include manual test notes for anything in `init.lua`,
-   since that layer can only be tested by hand.
+   `meeting.lua`, `detector.lua`, `prompt.lua` or `recorder/`, since those layers can only be
+   tested by hand.
+
+Rebuilding `DeepgramRecorder.app` with changed code changes its ad-hoc signature, so macOS
+asks for Microphone and System Audio Recording permission again. That's expected.
+
+Set `DEEPGRAM_STREAM_DEBUG=1` when running `DeepgramRecorder --stream` by hand to log every
+message Deepgram sends (with timestamps) to stderr.
 
 ## Reporting bugs
 
