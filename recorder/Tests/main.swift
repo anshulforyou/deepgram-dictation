@@ -59,6 +59,38 @@ test("atomic flag stores its value") {
     expect(flag.isSet, "set")
 }
 
+// MARK: TrackClock
+
+test("track clock inserts nothing for continuous audio") {
+    var clock = TrackClock(sampleRate: 100)
+    expect(clock.framesToInsert(at: 50, frames: 10) == 0, "first buffer")
+    expect(clock.framesToInsert(at: 50.1, frames: 10) == 0, "next buffer on time")
+    expect(clock.framesToInsert(at: 50.21, frames: 10) == 0, "jitter is ignored")
+    expect(clock.framesWritten == 30, "frames counted")
+}
+
+test("track clock fills a gap with silence") {
+    var clock = TrackClock(sampleRate: 100)
+    _ = clock.framesToInsert(at: 50, frames: 10)        // covers 50.0-50.1
+    expect(clock.framesToInsert(at: 53.1, frames: 10) == 300, "3 s gap -> 300 frames")
+    expect(clock.framesToInsert(at: 53.2, frames: 10) == 0, "back in step")
+    expect(clock.framesWritten == 330, "silence counted")
+}
+
+test("track clock does not fill paused time after reanchoring") {
+    var clock = TrackClock(sampleRate: 100)
+    _ = clock.framesToInsert(at: 50, frames: 10)
+    clock.reanchor()
+    expect(clock.framesToInsert(at: 80, frames: 10) == 0, "resumes without filling the pause")
+    expect(clock.framesToInsert(at: 82.1, frames: 10) == 200, "later gaps measured from the new anchor")
+}
+
+test("track clock ignores audio arriving early") {
+    var clock = TrackClock(sampleRate: 100)
+    _ = clock.framesToInsert(at: 50, frames: 100)
+    expect(clock.framesToInsert(at: 50.5, frames: 10) == 0, "never negative")
+}
+
 // MARK: SilenceWatchdog
 
 test("watchdog trips once after the threshold of digital silence") {

@@ -63,6 +63,60 @@ class DropEchoTest(unittest.TestCase):
         self.assertEqual(mt.drop_echo(mic, system), mic)
 
 
+class AlignTest(unittest.TestCase):
+    # 300 distinct words, one every 0.5 s, on the computer-audio track.
+    SYSTEM = [(f"w{i}", i * 0.5) for i in range(300)]
+
+    @staticmethod
+    def drifted(words, lag_at):
+        """The mic hearing `words` through the speakers, `lag_at(t)` seconds late."""
+        return [(w, t + lag_at(t)) for w, t in words]
+
+    def test_words_from_response(self):
+        resp = {"results": {"channels": [{"alternatives": [{"words": [
+            {"word": "hello", "punctuated_word": "Hello,", "start": 1.0},
+            {"word": "it's", "punctuated_word": "It's", "start": 1.5},
+            {"word": "", "start": 2.0},
+        ]}]}]}}
+        self.assertEqual(mt.words_from_response(resp, 0.5), [("hello", 1.5), ("it's", 2.0)])
+        self.assertEqual(mt.words_from_response({}), [])
+
+    def test_echo_lags_measures_the_delay(self):
+        lags = mt.echo_lags(self.drifted(self.SYSTEM, lambda t: 10.0), self.SYSTEM)
+        self.assertEqual(len(lags), 297)
+        self.assertTrue(all(abs(lag - 10.0) < 1e-9 for _, lag in lags))
+
+    def test_echo_lags_ignores_phrases_said_more_than_once(self):
+        phrase = [("you", 0), ("know", 1), ("what", 2), ("i", 3)]
+        twice = phrase + [(w, t + 10) for w, t in phrase]
+        self.assertEqual(len(mt.echo_lags(phrase, phrase)), 1)
+        self.assertEqual(mt.echo_lags(twice, phrase), [], "ambiguous on the mic")
+        self.assertEqual(mt.echo_lags(phrase, twice), [], "ambiguous on computer audio")
+
+    def test_align_follows_drift_through_the_meeting(self):
+        lag = lambda t: 10.0 if t < 75 else 14.0  # noqa: E731 - the tap skipped 4 s at 75 s
+        lags = mt.echo_lags(self.drifted(self.SYSTEM, lag), self.SYSTEM)
+        system = [{"start": 5.0, "end": 6.0, "text": "a"}, {"start": 145.0, "end": 146.0, "text": "b"}]
+        aligned = mt.align_to_mic(system, lags, window=30)
+        self.assertEqual([(u["start"], u["end"]) for u in aligned], [(15.0, 16.0), (159.0, 160.0)])
+
+    def test_align_leaves_tracks_alone_without_echo(self):
+        system = [{"start": 5.0, "end": 6.0, "text": "a"}]
+        self.assertEqual(mt.align_to_mic(system, [(1.0, 9.0)] * 5), system)
+
+    def test_drifted_echo_is_removed_after_alignment(self):
+        words = "so the trajectory keeps updating as you prompt it and it gives output".split()
+        system_words = [(w, 100 + i * 0.4) for i, w in enumerate(words)] + self.SYSTEM[:100]
+        mic_words = self.drifted(system_words, lambda t: 12.0)
+        text = " ".join(words)
+        system = [{"start": 100.0, "end": 105.0, "text": text, "speaker": 0, "track": "system"}]
+        mic = [{"start": 112.0, "end": 117.0, "text": text, "speaker": 0, "track": "mic"},
+               {"start": 130.0, "end": 131.0, "text": "my own words", "speaker": 0, "track": "mic"}]
+        self.assertEqual(len(mt.drop_echo(mic, system)), 2, "12 s apart: echo not recognised")
+        aligned = mt.align_to_mic(system, mt.echo_lags(mic_words, system_words))
+        self.assertEqual([u["text"] for u in mt.drop_echo(mic, aligned)], ["my own words"])
+
+
 class RecordingNotesTest(unittest.TestCase):
     @staticmethod
     def utt(words, track="mic"):

@@ -13,8 +13,10 @@ pipeline does not pay for the audio twice. Uses only the Python standard library
 """
 
 import argparse
+import bisect
 import json
 import re
+import statistics
 import subprocess
 import sys
 import urllib.error
@@ -31,6 +33,9 @@ ECHO_WINDOW = 3.0       # seconds around a mic utterance to look for the same wo
 ECHO_OVERLAP = 0.6      # fraction of a mic utterance's words that must appear in system audio
 MERGE_GAP = 2.0         # merge consecutive same-speaker utterances closer than this (seconds)
 MIN_TRACK_BYTES = 2048  # smaller files contain no usable audio
+ALIGN_NGRAM = 4         # words in a row that must match to count as the mic hearing the speakers
+ALIGN_MIN_MATCHES = 20  # fewer matches than this: no echo to align on (e.g. headphones)
+ALIGN_WINDOW = 180.0    # seconds either side of an utterance whose matches set its correction
 FEW_REMOTE_WORDS = 0.03 # computer audio with fewer words than this share of the mic's is suspect
 
 
@@ -109,6 +114,52 @@ def utterances_from_response(resp, track, offset=0.0):
             "end": float(u.get("end", 0)) + offset,
             "text": text,
         })
+    return out
+
+
+def words_from_response(resp, offset=0.0):
+    """[(word, start)] on the session timeline, lowercased and without punctuation."""
+    channels = (resp.get("results") or {}).get("channels") or [{}]
+    words = ((channels[0].get("alternatives") or [{}])[0]).get("words") or []
+    out = []
+    for w in words:
+        token = re.sub(r"[^\w']", "", (w.get("punctuated_word") or w.get("word") or "").lower())
+        if token:
+            out.append((token, float(w.get("start", 0)) + offset))
+    return out
+
+
+def echo_lags(mic_words, system_words, n=ALIGN_NGRAM):
+    """[(system time, lag)] wherever the mic heard the speakers play the same run of `n` words
+    that appears exactly once in each track; lag = mic time - system time."""
+    def unique_ngrams(words):
+        seen = {}
+        for i in range(len(words) - n + 1):
+            key = tuple(w for w, _ in words[i:i + n])
+            seen[key] = None if key in seen else words[i][1]
+        return {k: t for k, t in seen.items() if t is not None}
+
+    on_mic = unique_ngrams(mic_words)
+    return sorted((t, on_mic[k] - t) for k, t in unique_ngrams(system_words).items() if k in on_mic)
+
+
+def align_to_mic(system, lags, window=ALIGN_WINDOW):
+    """Shifts computer-audio utterances onto the mic's timeline using the echo the mic picked
+    up. Undoes drift between the tracks (e.g. the system audio tap skipping time), which would
+    otherwise break echo removal and the order of turns. Without enough echo, returns `system`
+    unchanged."""
+    if len(lags) < ALIGN_MIN_MATCHES:
+        return system
+    times = [t for t, _ in lags]
+    out = []
+    for u in system:
+        lo = bisect.bisect_left(times, u["start"] - window)
+        hi = bisect.bisect_right(times, u["start"] + window)
+        if lo == hi:  # no echo nearby: use the closest matches
+            i = bisect.bisect_left(times, u["start"])
+            lo, hi = max(0, i - ALIGN_MIN_MATCHES), min(len(times), i + ALIGN_MIN_MATCHES)
+        shift = statistics.median(lag for _, lag in lags[lo:hi])
+        out.append({**u, "start": u["start"] + shift, "end": u["end"] + shift})
     return out
 
 
@@ -282,16 +333,19 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
         raise TranscribeError("The recording contains no audio")
 
     url = build_url(model, language, load_keyterms(dictionary))
-    by_track = {}
+    by_track, words_by_track = {}, {}
     for track in tracks:
         cached = (session_dir / f"deepgram-{track}.json").exists()
         if not cached and api_key is None:
             api_key = read_api_key(keychain_name)
         resp = transcribe_track(session_dir, track, url, api_key)
-        by_track[track] = utterances_from_response(resp, track, status.get(f"{track}Offset") or 0.0)
+        offset = status.get(f"{track}Offset") or 0.0
+        by_track[track] = utterances_from_response(resp, track, offset)
+        words_by_track[track] = words_from_response(resp, offset)
 
     mic, system = by_track.get("mic", []), by_track.get("system", [])
     if online:
+        system = align_to_mic(system, echo_lags(words_by_track.get("mic", []), words_by_track.get("system", [])))
         mic = drop_echo(mic, system)
     notes = recording_notes(status, mic, system, online)
 

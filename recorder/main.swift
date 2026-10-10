@@ -35,6 +35,21 @@ func hostSeconds(_ hostTime: UInt64) -> Double {
 
 func nowHostSeconds() -> Double { hostSeconds(AudioGetCurrentHostTime()) }
 
+/// Writes `frames` of silence to `file`, in chunks.
+func writeSilence(_ frames: Int, format: AVAudioFormat, to file: AVAudioFile) {
+    var remaining = frames
+    while remaining > 0 {
+        let count = AVAudioFrameCount(min(remaining, 48000))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count) else { return }
+        buffer.frameLength = count
+        for b in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            if let data = b.mData { memset(data, 0, Int(b.mDataByteSize)) }
+        }
+        try? file.write(from: buffer)
+        remaining -= Int(count)
+    }
+}
+
 final class StatusWriter {
     let url: URL
     var fields: [String: Any] = [:]
@@ -141,6 +156,8 @@ final class MicRecorder {
     private var watchdog = SilenceWatchdog()
     private(set) var firstSampleHostTime: Double?
     let paused = AtomicFlag()
+    private var clock = TrackClock(sampleRate: MicCapture.format.sampleRate)
+    private var wasPaused = false
 
     func start(url: URL, onBlocked: @escaping () -> Void) throws {
         let settings: [String: Any] = [
@@ -151,10 +168,13 @@ final class MicRecorder {
         let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         self.file = file
         let capture = MicCapture { [weak self] buffer, when in
-            guard let self, !self.paused.isSet else { return }
-            if self.firstSampleHostTime == nil {
-                self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
-            }
+            guard let self else { return }
+            if self.paused.isSet { self.wasPaused = true; return }
+            if self.wasPaused { self.clock.reanchor(); self.wasPaused = false }
+            let time = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
+            if self.firstSampleHostTime == nil { self.firstSampleHostTime = time }
+            let gap = self.clock.framesToInsert(at: time, frames: Int(buffer.frameLength))
+            if gap > 0 { writeSilence(gap, format: buffer.format, to: file) }
             try? file.write(from: buffer)
             if let data = buffer.floatChannelData,
                self.watchdog.feed(samples: UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength)),
@@ -182,6 +202,8 @@ final class SystemAudioRecorder {
     private var file: AVAudioFile?
     private(set) var firstSampleHostTime: Double?
     let paused = AtomicFlag()
+    private var clock: TrackClock?
+    private var wasPaused = false
     private let queue = DispatchQueue(label: "system-audio", qos: .userInitiated)
 
     func start(url: URL) throws {
@@ -228,15 +250,19 @@ final class SystemAudioRecorder {
         let file = try AVAudioFile(forWriting: url, settings: settings,
                                    commonFormat: tapFormat.commonFormat, interleaved: tapFormat.isInterleaved)
         self.file = file
+        clock = TrackClock(sampleRate: tapFormat.sampleRate)
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { [weak self] _, inputData, inputTime, _, _ in
-            guard let self, !self.paused.isSet else { return }
-            if self.firstSampleHostTime == nil {
-                self.firstSampleHostTime = hostSeconds(inputTime.pointee.mHostTime)
-            }
+            guard let self else { return }
+            if self.paused.isSet { self.wasPaused = true; return }
+            if self.wasPaused { self.clock?.reanchor(); self.wasPaused = false }
+            let time = inputTime.pointee.mHostTime != 0 ? hostSeconds(inputTime.pointee.mHostTime) : nowHostSeconds()
+            if self.firstSampleHostTime == nil { self.firstSampleHostTime = time }
             guard let buffer = AVAudioPCMBuffer(pcmFormat: tapFormat, bufferListNoCopy: inputData, deallocator: nil) else {
                 return
             }
+            let gap = self.clock?.framesToInsert(at: time, frames: Int(buffer.frameLength)) ?? 0
+            if gap > 0 { writeSilence(gap, format: tapFormat, to: file) }
             try? file.write(from: buffer)
         }, "creating IO proc")
         try check(AudioDeviceStart(aggregateID, procID), "starting system audio capture")

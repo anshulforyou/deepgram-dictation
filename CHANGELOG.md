@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format follows
 - A transcript warning when an online meeting's computer audio captured almost nothing, so
   missing remote speakers don't go unnoticed.
 
+### Fixed
+
+- Mic and computer-audio tracks drifting apart (10+ seconds over an hour) when the system audio
+  tap skipped time. The recorder now writes audio by timestamp, filling gaps with silence, and
+  transcription re-aligns the tracks from the speaker echo the mic picks up. Without this, other
+  people's speech heard through the speakers was left in the transcript as "Me".
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

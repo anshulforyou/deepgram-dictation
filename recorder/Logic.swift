@@ -59,6 +59,39 @@ struct PauseClock {
     }
 }
 
+/// Keeps a track in step with the clock. Audio sources sometimes skip time (the system audio
+/// tap goes quiet for seconds at a time); appending regardless would shift everything after the
+/// gap, and the mic and computer-audio tracks would drift apart. `framesToInsert` says how much
+/// silence to write before a buffer so it lands at the right moment.
+struct TrackClock {
+    let sampleRate: Double
+    let tolerance: Double            // seconds of lag ignored (clock jitter, small drift)
+    private var anchor: Double?      // host time of the track's frame 0, adjusted after pauses
+    private(set) var framesWritten: Int64 = 0
+
+    init(sampleRate: Double, tolerance: Double = 0.25) {
+        self.sampleRate = sampleRate
+        self.tolerance = tolerance
+    }
+
+    /// After a pause: the next buffer continues the track without filling the paused time.
+    mutating func reanchor() { anchor = nil }
+
+    /// Call for every buffer, in order, with its host time and length; returns silence frames to
+    /// write first.
+    mutating func framesToInsert(at hostTime: Double, frames: Int) -> Int {
+        var insert = 0
+        if let anchor {
+            let gap = Int64(((hostTime - anchor) * sampleRate).rounded()) - framesWritten
+            if Double(gap) > tolerance * sampleRate { insert = Int(gap) }
+        } else {
+            anchor = hostTime - Double(framesWritten) / sampleRate
+        }
+        framesWritten += Int64(insert + frames)
+        return insert
+    }
+}
+
 /// A Bool shared between the main thread and audio threads.
 final class AtomicFlag {
     private let lock = NSLock()
