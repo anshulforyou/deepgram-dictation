@@ -9,7 +9,8 @@
 //   mic.m4a, system.m4a  audio tracks
 //   status.json          {"state": "starting"|"recording"|"stopped"|"error", ...}
 //   recorder.pid
-// Stops cleanly on SIGINT or SIGTERM.
+// Stops cleanly on SIGINT or SIGTERM. SIGUSR1 pauses and SIGUSR2 resumes: while paused nothing is
+// written to either track, so both stay aligned and paused time isn't sent to Deepgram.
 
 import AVFoundation
 import AppKit
@@ -139,6 +140,7 @@ final class MicRecorder {
     private var file: AVAudioFile?
     private var watchdog = SilenceWatchdog()
     private(set) var firstSampleHostTime: Double?
+    let paused = AtomicFlag()
 
     func start(url: URL, onBlocked: @escaping () -> Void) throws {
         let settings: [String: Any] = [
@@ -149,7 +151,7 @@ final class MicRecorder {
         let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
         self.file = file
         let capture = MicCapture { [weak self] buffer, when in
-            guard let self else { return }
+            guard let self, !self.paused.isSet else { return }
             if self.firstSampleHostTime == nil {
                 self.firstSampleHostTime = when.isHostTimeValid ? hostSeconds(when.hostTime) : nowHostSeconds()
             }
@@ -179,6 +181,7 @@ final class SystemAudioRecorder {
     private var procID: AudioDeviceIOProcID?
     private var file: AVAudioFile?
     private(set) var firstSampleHostTime: Double?
+    let paused = AtomicFlag()
     private let queue = DispatchQueue(label: "system-audio", qos: .userInitiated)
 
     func start(url: URL) throws {
@@ -227,7 +230,7 @@ final class SystemAudioRecorder {
         self.file = file
 
         try check(AudioDeviceCreateIOProcIDWithBlock(&procID, aggregateID, queue) { [weak self] _, inputData, inputTime, _, _ in
-            guard let self else { return }
+            guard let self, !self.paused.isSet else { return }
             if self.firstSampleHostTime == nil {
                 self.firstSampleHostTime = hostSeconds(inputTime.pointee.mHostTime)
             }
@@ -278,6 +281,7 @@ final class Session {
     let mic = MicRecorder()
     let system = SystemAudioRecorder()
     var startHostTime = 0.0
+    var pauses = PauseClock()
     var warnings: [String] = []
     var signalSources: [DispatchSourceSignal] = []
     var stopped = false
@@ -330,6 +334,8 @@ final class Session {
         status.update([
             "state": "recording",
             "startedAt": ISO8601DateFormatter().string(from: Date()),
+            "startedAtEpoch": Date().timeIntervalSince1970,
+            "paused": false,
             "warnings": warnings,
         ])
     }
@@ -341,25 +347,41 @@ final class Session {
     }
 
     private func installSignalHandlers() {
-        for sig in [SIGINT, SIGTERM] {
+        let handlers: [(Int32, (Session) -> Void)] = [
+            (SIGINT, { $0.stop() }), (SIGTERM, { $0.stop() }),
+            (SIGUSR1, { $0.setPaused(true) }), (SIGUSR2, { $0.setPaused(false) }),
+        ]
+        for (sig, handler) in handlers {
             signal(sig, SIG_IGN)
             let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-            source.setEventHandler { [weak self] in self?.stop() }
+            source.setEventHandler { [weak self] in if let self { handler(self) } }
             source.resume()
             signalSources.append(source)
         }
     }
 
+    private func setPaused(_ paused: Bool) {
+        guard !stopped else { return }
+        let now = nowHostSeconds()
+        guard paused ? pauses.pause(at: now) : pauses.resume(at: now) else { return }
+        mic.paused.isSet = paused
+        system.paused.isSet = paused
+        status.update(["paused": paused, "pausedSeconds": pauses.pausedSeconds(at: now)])
+    }
+
     func stop() {
         guard !stopped else { return }
         stopped = true
+        let stopTime = nowHostSeconds()
         mic.stop()
         if captureSystem { system.stop() }
         let offset = { (t: Double?) -> Any in t.map { max(0, $0 - self.startHostTime) } ?? NSNull() }
         status.update([
             "state": "stopped",
             "endedAt": ISO8601DateFormatter().string(from: Date()),
-            "duration": nowHostSeconds() - startHostTime,
+            "duration": stopTime - startHostTime - pauses.pausedSeconds(at: stopTime),
+            "paused": false,
+            "pausedSeconds": pauses.pausedSeconds(at: stopTime),
             "micOffset": offset(mic.firstSampleHostTime),
             "systemOffset": offset(system.firstSampleHostTime),
         ])

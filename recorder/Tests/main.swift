@@ -25,6 +25,40 @@ func withSamples<R>(_ values: [Float], _ body: (UnsafeBufferPointer<Float>) -> R
     values.withUnsafeBufferPointer(body)
 }
 
+// MARK: PauseClock
+
+test("pause clock adds up completed pauses") {
+    var clock = PauseClock()
+    expect(clock.pause(at: 10), "first pause")
+    expect(clock.isPaused, "paused")
+    expect(clock.resume(at: 15), "resume")
+    expect(clock.pause(at: 20) && clock.resume(at: 22), "second pause")
+    expect(!clock.isPaused && clock.pausedSeconds(at: 100) == 7, "7 s paused in total")
+}
+
+test("pause clock counts a pause still in progress") {
+    var clock = PauseClock()
+    _ = clock.pause(at: 10)
+    expect(clock.pausedSeconds(at: 13) == 3, "3 s so far")
+    expect(clock.pausedSeconds(at: 9) == 0, "never negative")
+}
+
+test("pause clock ignores repeated pause and resume") {
+    var clock = PauseClock()
+    expect(!clock.resume(at: 5), "resume while running is ignored")
+    _ = clock.pause(at: 10)
+    expect(!clock.pause(at: 12), "second pause is ignored")
+    _ = clock.resume(at: 14)
+    expect(clock.pausedSeconds(at: 20) == 4, "measured from the first pause")
+}
+
+test("atomic flag stores its value") {
+    let flag = AtomicFlag()
+    expect(!flag.isSet, "starts unset")
+    flag.isSet = true
+    expect(flag.isSet, "set")
+}
+
 // MARK: SilenceWatchdog
 
 test("watchdog trips once after the threshold of digital silence") {

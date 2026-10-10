@@ -25,6 +25,7 @@ core.DEFAULTS = {
   meetingLanguage  = nil,       -- defaults to `language`
   transcriptsDir   = nil,       -- defaults to ~/Documents/Meeting Transcripts
   keepMeetingAudio = false,     -- keep recordings after a successful transcription
+  showMeetingIndicator = true,  -- floating pill with pause/stop buttons while a meeting is recorded
   recorderApp      = nil,       -- defaults to ~/Library/Application Support/deepgram-dictation/DeepgramRecorder.app
   python           = nil,       -- python3 path; auto-detected when nil
 
@@ -344,6 +345,26 @@ function core.formatElapsed(seconds)
   local h, m, s = seconds // 3600, (seconds % 3600) // 60, seconds % 60
   if h > 0 then return string.format("%d:%02d:%02d", h, m, s) end
   return string.format("%d:%02d", m, s)
+end
+
+-- Recorded (unpaused) seconds of a meeting. `pausedTotal` is the time spent in finished pauses;
+-- `pausedAt` is when the current pause began, or nil while recording.
+function core.activeSeconds(startedAt, now, pausedTotal, pausedAt)
+  local paused = (pausedTotal or 0) + (pausedAt and math.max(0, now - pausedAt) or 0)
+  return math.max(0, now - startedAt - paused)
+end
+
+-- Text for the floating meeting indicator: (headline, detail).
+function core.indicatorText(state, paused, elapsed, name)
+  if state == "recording" then
+    local headline = paused and "Paused" or "Transcribing"
+    return headline, (name and (name .. " · ") or "") .. core.formatElapsed(elapsed)
+  elseif state == "starting" then
+    return "Starting…", name or ""
+  elseif state == "stopping" or state == "transcribing" then
+    return "Saving transcript…", "You'll get a notification"
+  end
+  return nil
 end
 
 -- Session directory name for a recording started at `t` (an os.date("*t") table).

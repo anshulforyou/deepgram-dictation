@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A floating pill while a meeting is recorded, showing the meeting and elapsed time, with pause
+  and stop buttons. Draggable; `showMeetingIndicator = false` hides it.
+- Pausing a meeting recording (pill, menu). Paused time isn't recorded or sent to Deepgram, and
+  the transcript notes how long it was paused.
+- A transcript warning when an online meeting's computer audio captured almost nothing, so
+  missing remote speakers don't go unnoticed.
+
 ## [0.2.0] - 2026-10-09
 
 ### Added

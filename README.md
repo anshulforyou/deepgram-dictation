@@ -104,7 +104,9 @@ closed), the recording stops and is transcribed automatically.
   control your browser. Allow it so tabs can be read. Firefox is matched by window title.
 - Nothing is recorded until you click **Transcribe**.
 
-While recording, the menu bar shows 🔴 and the elapsed time. When you stop:
+While recording, a small floating pill shows the meeting and elapsed time, with **pause** and
+**stop** buttons (drag it anywhere; the position is remembered). Nothing is recorded while
+paused. The menu bar also shows 🔴 and the elapsed time. When you stop:
 
 1. each track is sent to Deepgram Nova-3 with speaker diarization,
 2. the tracks are merged into one timeline. In online meetings your mic is labelled **Me** and
@@ -215,6 +217,7 @@ deepgramDictation.start({
 | `meetingLanguage` | same as `language` | Language for meeting transcripts |
 | `transcriptsDir` | `~/Documents/Meeting Transcripts` | Where transcripts are saved |
 | `keepMeetingAudio` | `false` | Keep the audio after a successful transcription |
+| `showMeetingIndicator` | `true` | Show the floating pill with pause/stop buttons while recording |
 | `recorderApp` | `~/Library/Application Support/deepgram-dictation/DeepgramRecorder.app` | Path to the recorder app |
 | `python` | auto-detected | Path to `python3` |
 

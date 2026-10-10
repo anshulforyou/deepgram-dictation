@@ -31,6 +31,7 @@ ECHO_WINDOW = 3.0       # seconds around a mic utterance to look for the same wo
 ECHO_OVERLAP = 0.6      # fraction of a mic utterance's words that must appear in system audio
 MERGE_GAP = 2.0         # merge consecutive same-speaker utterances closer than this (seconds)
 MIN_TRACK_BYTES = 2048  # smaller files contain no usable audio
+FEW_REMOTE_WORDS = 0.03 # computer audio with fewer words than this share of the mic's is suspect
 
 
 class TranscribeError(Exception):
@@ -129,6 +130,30 @@ def drop_echo(mic, system):
             continue
         kept.append(m)
     return kept
+
+
+def word_count(utterances):
+    return sum(len(u["text"].split()) for u in utterances)
+
+
+def recording_notes(status, mic, system, online):
+    """Notes shown at the top of the transcript: recorder warnings, pauses, and computer audio
+    that captured nothing (or almost nothing) in an online meeting."""
+    notes = list(status.get("warnings") or [])
+    paused = status.get("pausedSeconds") or 0
+    if paused >= 1:
+        notes.append(f"Recording was paused for {format_timestamp(paused)}; that part isn't in the transcript.")
+    if online:
+        mic_words, system_words = word_count(mic), word_count(system)
+        if not system:
+            notes.append("No speech was captured from computer audio. If others spoke over Zoom/Meet, check "
+                         "that DeepgramRecorder is allowed under System Settings → Privacy & Security → "
+                         "System Audio Recording Only.")
+        elif mic_words >= 100 and system_words < FEW_REMOTE_WORDS * mic_words:
+            notes.append(f"Computer audio captured only {system_words} word{'s' if system_words != 1 else ''} "
+                         f"against {mic_words} from your microphone, so other participants' speech is "
+                         "probably missing.")
+    return notes
 
 
 def label_speakers(utterances, online):
@@ -266,13 +291,9 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
         by_track[track] = utterances_from_response(resp, track, status.get(f"{track}Offset") or 0.0)
 
     mic, system = by_track.get("mic", []), by_track.get("system", [])
-    notes = list(status.get("warnings") or [])
     if online:
         mic = drop_echo(mic, system)
-        if not system:
-            notes.append("No speech was captured from computer audio. If others spoke over Zoom/Meet, check "
-                         "that DeepgramRecorder is allowed under System Settings → Privacy & Security → "
-                         "System Audio Recording Only.")
+    notes = recording_notes(status, mic, system, online)
 
     utterances = merge_consecutive(label_speakers(mic + system, online))
     started_at = parse_started_at(status)

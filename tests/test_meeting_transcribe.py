@@ -63,6 +63,35 @@ class DropEchoTest(unittest.TestCase):
         self.assertEqual(mt.drop_echo(mic, system), mic)
 
 
+class RecordingNotesTest(unittest.TestCase):
+    @staticmethod
+    def utt(words, track="mic"):
+        return {"start": 0.0, "end": 1.0, "text": " ".join(["word"] * words), "speaker": 0, "track": track}
+
+    def test_keeps_recorder_warnings(self):
+        notes = mt.recording_notes({"warnings": ["mic blocked"]}, [], [], online=False)
+        self.assertEqual(notes, ["mic blocked"])
+
+    def test_mentions_pauses(self):
+        notes = mt.recording_notes({"pausedSeconds": 192.4}, [self.utt(5)], [], online=False)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("paused for 03:12", notes[0])
+        self.assertEqual(mt.recording_notes({"pausedSeconds": 0.2}, [], [], online=False), [])
+
+    def test_warns_when_computer_audio_is_nearly_silent(self):
+        notes = mt.recording_notes({}, [self.utt(2807)], [self.utt(1, "system")], online=True)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("only 1 word against 2807", notes[0])
+
+    def test_no_warning_for_a_normal_conversation(self):
+        self.assertEqual(mt.recording_notes({}, [self.utt(500)], [self.utt(300, "system")], online=True), [])
+        # Short meetings are too small to judge.
+        self.assertEqual(mt.recording_notes({}, [self.utt(50)], [self.utt(1, "system")], online=True), [])
+
+    def test_in_person_never_warns_about_computer_audio(self):
+        self.assertEqual(mt.recording_notes({}, [self.utt(500)], [], online=False), [])
+
+
 class LabelAndMergeTest(unittest.TestCase):
     def test_online_mic_is_me_and_remote_numbered_by_appearance(self):
         utts = [utt("system", 3, 5.0, 6.0, "b"), utt("mic", 0, 0.0, 1.0, "a"), utt("system", 1, 2.0, 3.0, "c")]

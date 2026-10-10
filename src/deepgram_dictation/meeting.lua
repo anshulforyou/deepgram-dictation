@@ -6,6 +6,7 @@
 -- Hammerspoon reload during a meeting picks the recording back up.
 
 local core = require("deepgram_dictation.core")
+local indicator = require("deepgram_dictation.meeting_indicator")
 
 local M = {}
 
@@ -19,7 +20,16 @@ local session, pollTimer, tickTimer, transcriber
 local lastTranscript
 
 local function log(fmt, ...) print("[deepgram-dictation] meeting: " .. string.format(fmt, ...)) end
-local function changed() if onChange then onChange() end end
+local function updateIndicator()
+  if not cfg.showMeetingIndicator then return end
+  indicator.update({ state = state, paused = M.isPaused(), elapsed = M.elapsed(),
+                     name = session and session.source and session.source.name or nil })
+end
+
+local function changed()
+  updateIndicator()
+  if onChange then onChange() end
+end
 
 local function exists(path) return hs.fs.attributes(path) ~= nil end
 
@@ -76,8 +86,22 @@ local function readSource(dir)
   return ok and type(data) == "table" and data or nil
 end
 
-local function beginRecordingState(dir, startedAt, online, source)
-  session = { dir = dir, startedAt = startedAt, online = online, source = source }
+-- `status` (optional) is the recorder's status.json, used to restore pause state after a reload.
+local function beginRecordingState(dir, startedAt, online, source, status)
+  status = status or readStatus(dir) or {}
+  local now = hs.timer.secondsSinceEpoch()
+  session = {
+    dir = dir, startedAt = startedAt, online = online, source = source,
+    -- Recorders from before pause support would be killed by the pause signal.
+    canPause = status.paused ~= nil,
+    pausedTotal = status.pausedSeconds or 0,
+    pausedAt = nil,
+  }
+  if status.paused then
+    -- The recorder rewrote status.json when the current pause began.
+    local attrs = hs.fs.attributes(dir .. "/status.json")
+    session.pausedAt = attrs and attrs.modification or now
+  end
   tickTimer = hs.timer.doEvery(1, changed)
   setState("recording")
 end
@@ -187,7 +211,32 @@ function M.start(mode, source)
   end)
 end
 
-local function signalRecorder(dir, sig)
+local signalRecorder -- defined below
+
+function M.isPaused() return session ~= nil and session.pausedAt ~= nil end
+
+function M.pause()
+  if state ~= "recording" or not session or session.pausedAt or not session.canPause then return end
+  if not signalRecorder(session.dir, "USR1") then return end
+  session.pausedAt = hs.timer.secondsSinceEpoch()
+  log("paused")
+  changed()
+end
+
+function M.resume()
+  if state ~= "recording" or not session or not session.pausedAt then return end
+  if not signalRecorder(session.dir, "USR2") then return end
+  session.pausedTotal = session.pausedTotal + (hs.timer.secondsSinceEpoch() - session.pausedAt)
+  session.pausedAt = nil
+  log("resumed")
+  changed()
+end
+
+function M.togglePause()
+  if M.isPaused() then M.resume() else M.pause() end
+end
+
+signalRecorder = function(dir, sig)
   local f = io.open(dir .. "/recorder.pid", "r")
   if not f then return false end
   local pid = tonumber(f:read("l"))
@@ -310,10 +359,12 @@ local function adoptRunningSession()
     local dir = SESSIONS_DIR .. "/" .. name
     local status = name:sub(1, 1) ~= "." and readStatus(dir)
     if status and status.state == "recording" and processAlive(status.pid) then
-      local elapsed = 0
-      local attrs = hs.fs.attributes(dir .. "/status.json")
-      if attrs then elapsed = os.time() - attrs.modification end
-      beginRecordingState(dir, hs.timer.secondsSinceEpoch() - elapsed, status.captureSystem, readSource(dir))
+      local startedAt = status.startedAtEpoch
+      if not startedAt then
+        local attrs = hs.fs.attributes(dir .. "/status.json")
+        startedAt = attrs and attrs.modification or os.time()
+      end
+      beginRecordingState(dir, startedAt, status.captureSystem, readSource(dir), status)
       log("resumed tracking recording %s", name)
       return
     end
@@ -326,11 +377,12 @@ function M.state() return state end
 function M.source() return session and session.source or nil end
 
 function M.elapsed()
-  return session and (hs.timer.secondsSinceEpoch() - session.startedAt) or 0
+  if not session then return 0 end
+  return core.activeSeconds(session.startedAt, hs.timer.secondsSinceEpoch(), session.pausedTotal, session.pausedAt)
 end
 
 function M.menubarTitle()
-  if state == "recording" then return "🔴 " .. core.formatElapsed(M.elapsed()) end
+  if state == "recording" then return (M.isPaused() and "⏸ " or "🔴 ") .. core.formatElapsed(M.elapsed()) end
   if state == "starting" or state == "stopping" or state == "transcribing" then return "⏳" end
   return nil
 end
@@ -346,6 +398,9 @@ function M.menuItems()
     local what = session.source and (session.source.name .. " ") or ""
     table.insert(items, { title = "Stop & transcribe " .. what .. "(" .. core.formatElapsed(M.elapsed()) .. ")",
                           fn = function() M.stop() end })
+    if session.canPause then
+      table.insert(items, { title = M.isPaused() and "Resume recording" or "Pause recording", fn = M.togglePause })
+    end
     table.insert(items, { title = "Discard recording", fn = M.discard })
   else
     local label = ({ starting = "Starting recorder…", stopping = "Finishing recording…",
@@ -379,6 +434,7 @@ end
 
 function M.setup(config, dictionaryPath, changeCallback)
   cfg, dictPath, onChange = config, dictionaryPath, changeCallback
+  indicator.setup({ pause = M.togglePause, stop = function() M.stop() end })
   if cfg.meetingHotkey then
     M.hotkey = hs.hotkey.bind(cfg.meetingHotkey.mods, cfg.meetingHotkey.key, M.toggle)
   end
@@ -389,6 +445,7 @@ end
 function M.teardown()
   if M.hotkey then M.hotkey:delete() M.hotkey = nil end
   stopTimers()
+  indicator.hide()
   session = nil
   state = "idle"
 end

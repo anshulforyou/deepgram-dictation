@@ -31,6 +31,44 @@ struct SilenceWatchdog {
     }
 }
 
+/// Tracks pauses in a meeting recording, so the reported duration covers only recorded time.
+/// Times are host-clock seconds.
+struct PauseClock {
+    private(set) var pausedTotal = 0.0
+    private(set) var pausedSince: Double?
+    var isPaused: Bool { pausedSince != nil }
+
+    /// Returns false if already paused.
+    mutating func pause(at time: Double) -> Bool {
+        guard pausedSince == nil else { return false }
+        pausedSince = time
+        return true
+    }
+
+    /// Returns false if not paused.
+    mutating func resume(at time: Double) -> Bool {
+        guard let since = pausedSince else { return false }
+        pausedTotal += max(0, time - since)
+        pausedSince = nil
+        return true
+    }
+
+    /// Total paused time up to `time`, including a pause still in progress.
+    func pausedSeconds(at time: Double) -> Double {
+        pausedTotal + (pausedSince.map { max(0, time - $0) } ?? 0)
+    }
+}
+
+/// A Bool shared between the main thread and audio threads.
+final class AtomicFlag {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return value }
+        set { lock.lock(); value = newValue; lock.unlock() }
+    }
+}
+
 enum StreamCompletion {
     /// Whether Deepgram's final results cover all the audio sent (within `tolerance` seconds).
     /// Finalize can be answered before Deepgram has processed audio that arrived in a burst, so
