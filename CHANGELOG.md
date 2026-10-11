@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Filing into [grandma](https://github.com/anshulforyou/grandma): with `grandmaHome`, meetings go
+  to the matching sweater's `meetings/` folder with an index and an INDEX.md pointer, and each one
+  gets a memory proposal for `grandma review`.
+
 ## [0.2.0] - 2026-10-11
 
 ### Added

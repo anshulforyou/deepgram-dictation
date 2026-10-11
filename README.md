@@ -179,6 +179,31 @@ Claude** in the 🎙 menu, or run
 Create, rename or merge folders yourself whenever you like. Claude uses the folder names and
 their recent meeting titles to decide where new meetings go. If Claude isn't available, the
 transcript is still saved (unfiled) and copied, and the notification says why it wasn't filed.
+
+### Filing into grandma
+
+If you use [grandma](https://github.com/anshulforyou/grandma), the memory layer for Claude Code,
+meetings can go straight into your sweaters instead, so grandma learns from them:
+
+```lua
+deepgramDictation.start({
+  organizeWithClaude = true,
+  grandmaHome = "~/.grandma",
+})
+```
+
+After each meeting Claude picks the sweater it belongs to (from your INDEX.md and each sweater's
+facts) and the transcript is saved to `<sweater>/meetings/`, with a `meetings.md` index there and a
+pointer in INDEX.md. Meetings never go at the sweater root, which grandma loads into every
+session. Claude then reads the sweater's memory against the meeting and drafts a memory proposal
+(new decisions, people, open threads) using grandma's capture doctrine. Review it like any other:
+
+```sh
+grandma review <sweater>
+```
+
+Nothing is applied or committed without you. A meeting that fits no sweater stays unfiled in
+`~/Documents/Meeting Transcripts/`, and Claude never creates a sweater on its own.
 - **Get consent.** Recording laws vary by place. Tell people when you're transcribing a meeting.
 
 ## Configuration
@@ -212,6 +237,7 @@ deepgramDictation.start({
 | `autoStopMeetings` | `true` | Stop and transcribe when a detected call ends |
 | `menuHotkey` | `{ mods = {"ctrl","alt","cmd"}, key = "d" }` | Shows the menu at the mouse pointer. `false` disables it |
 | `organizeWithClaude` | `false` | File transcripts into topic folders with Claude |
+| `grandmaHome` | `nil` | grandma memory home (e.g. `"~/.grandma"`): file into sweaters and draft memory proposals |
 | `claudePath` | auto-detected | Path to the `claude` CLI |
 | `claudeModel` | CLI default | Model for organizing, e.g. `"opus"` |
 | `meetingLanguage` | same as `language` | Language for meeting transcripts |
@@ -303,7 +329,8 @@ Dictation audio is recorded to a temporary file, sent over HTTPS directly to Dee
 `~/Library/Application Support/deepgram-dictation/meetings/` only until its transcript is saved
 (unless you set `keepMeetingAudio`). Transcripts stay on your Mac. Nothing goes to any server
 other than Deepgram, unless you turn on `organizeWithClaude`, which sends the transcript text
-(not audio) to Anthropic through your Claude Code login.
+(not audio) to Anthropic through your Claude Code login. With `grandmaHome`, the matching
+sweater's memory files are sent along with it to draft the memory proposal.
 See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they handle audio.
 
 ## How it works

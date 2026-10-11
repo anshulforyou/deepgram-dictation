@@ -33,11 +33,12 @@ core.DEFAULTS = {
   organizeWithClaude = false,   -- file each transcript into a topic folder with title, summary, action items
   claudePath       = nil,       -- `claude` CLI path; auto-detected when nil
   claudeModel      = nil,       -- e.g. "opus"; nil uses the CLI's default model
+  grandmaHome      = nil,       -- e.g. "~/.grandma": file into grandma sweaters + write memory proposals
 }
 
 core.OPTIONS = {
   recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
-  recorderApp = true, python = true, claudePath = true, claudeModel = true,
+  recorderApp = true, python = true, claudePath = true, claudeModel = true, grandmaHome = true,
 }
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
@@ -393,6 +394,10 @@ function core.transcribeArgs(cfg, script, sessionDir, transcriptsDir, dictionary
     if cfg.claudeModel then
       table.insert(args, "--claude-model")
       table.insert(args, cfg.claudeModel)
+    end
+    if cfg.grandmaHome then
+      table.insert(args, "--grandma-home")
+      table.insert(args, cfg.grandmaHome)
     end
   end
   return args

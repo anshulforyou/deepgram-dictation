@@ -270,6 +270,13 @@ describe("transcribeArgs", function()
     assert.are.equal(10, #core.transcribeArgs(cfg, "s.py", "/sess", "/out", nil, nil))
   end)
 
+  it("files into grandma only when organizing with Claude", function()
+    local cfg = core.mergeConfig({ grandmaHome = "~/.grandma" })
+    local args = core.transcribeArgs(cfg, "s.py", "/sess", "/out", nil, "/bin/claude")
+    assert.are.same({ "--grandma-home", "~/.grandma" }, { args[13], args[14] })
+    assert.are.equal(10, #core.transcribeArgs(cfg, "s.py", "/sess", "/out", nil, nil))
+  end)
+
   it("prefers meetingLanguage and adds dictionary and keep-audio flags", function()
     local cfg = core.mergeConfig({ language = "en", meetingLanguage = "multi", keepMeetingAudio = true })
     local args = core.transcribeArgs(cfg, "s.py", "/sess", "/out", "/d.json")

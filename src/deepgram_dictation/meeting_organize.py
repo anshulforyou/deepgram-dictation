@@ -92,13 +92,28 @@ def build_prompt(utterances, folders, started_at):
 
 def run_claude(claude_path, prompt, cwd, model=None, timeout=CLAUDE_TIMEOUT):
     """Runs `claude -p` with no tools and returns its structured output as a dict."""
+    out = _claude_json(claude_path, prompt, cwd, model, timeout, ["--json-schema", json.dumps(SCHEMA)])
+    if not isinstance(out.get("structured_output"), dict):
+        raise OrganizeError(f"Claude CLI error: {str(out.get('result') or out.get('subtype'))[:200]}")
+    return validate(out["structured_output"])
+
+
+def run_claude_text(claude_path, prompt, cwd, model=None, timeout=CLAUDE_TIMEOUT):
+    """Runs `claude -p` with no tools and returns its text answer."""
+    result = _claude_json(claude_path, prompt, cwd, model, timeout).get("result")
+    if not isinstance(result, str):
+        raise OrganizeError("Claude CLI returned no answer")
+    return result
+
+
+def _claude_json(claude_path, prompt, cwd, model, timeout, extra=()):
     cmd = [
         str(claude_path), "-p",
         "--tools", "",
         "--strict-mcp-config",
         "--no-session-persistence",
         "--output-format", "json",
-        "--json-schema", json.dumps(SCHEMA),
+        *extra,
     ]
     if model:
         cmd += ["--model", model]
@@ -117,9 +132,10 @@ def run_claude(claude_path, prompt, cwd, model=None, timeout=CLAUDE_TIMEOUT):
     except ValueError:
         detail = (proc.stderr or proc.stdout).strip()[:200]
         raise OrganizeError(f"Claude CLI failed: {detail or f'exit code {proc.returncode}'}")
-    if out.get("is_error") or not isinstance(out.get("structured_output"), dict):
-        raise OrganizeError(f"Claude CLI error: {str(out.get('result') or out.get('subtype'))[:200]}")
-    return validate(out["structured_output"])
+    if not isinstance(out, dict) or out.get("is_error"):
+        detail = out.get("result") or out.get("subtype") if isinstance(out, dict) else out
+        raise OrganizeError(f"Claude CLI error: {str(detail)[:200]}")
+    return out
 
 
 def validate(data):

@@ -157,9 +157,15 @@ onTranscribed = function(stdout, stderr)
   end
   lastTranscript = result.path
   local where = result.folder and ("Filed in " .. result.folder .. " · ") or ""
+  if result.grandma and not result.folder then where = "No grandma sweater fits, saved unfiled · " end
   if result.organizeError then
     log("organizing failed: %s", result.organizeError)
     where = "Not filed (" .. result.organizeError .. ") · "
+  end
+  if result.proposal then
+    where = where .. "Memory proposal: grandma review " .. result.folder:lower() .. "\n"
+  elseif result.proposalError then
+    log("memory proposal failed: %s", result.proposalError)
   end
   notify(result.title and ("Copied: " .. result.title) or "Meeting transcript copied",
     string.format("%s%d words · %s\nPaste it anywhere, or click to open.", where, result.words or 0,
@@ -318,6 +324,7 @@ local function refileAll(paths)
     end
     local args = { SCRIPT, "--refile", paths[i], "--output-dir", M.transcriptsDir(), "--organize-with-claude", claude }
     if cfg.claudeModel then table.insert(args, "--claude-model") table.insert(args, cfg.claudeModel) end
+    if cfg.grandmaHome then table.insert(args, "--grandma-home") table.insert(args, cfg.grandmaHome) end
     hs.task.new(python, function(_, stdout)
       local ok, result = pcall(hs.json.decode, (stdout or ""):match("([^\n]+)%s*$") or "{}")
       if ok and type(result) == "table" and result.folder then

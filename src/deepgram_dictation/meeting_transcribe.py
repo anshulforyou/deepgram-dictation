@@ -25,6 +25,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+import meeting_grandma
 import meeting_organize
 
 API_URL = "https://api.deepgram.com/v1/listen"
@@ -370,22 +371,64 @@ def parse_started_at(status):
     return datetime.now(timezone.utc).astimezone()
 
 
-def organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model):
-    """Asks Claude for folder, title, summary and action items. Returns (info, error)."""
+def organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model, grandma_home=None):
+    """Asks Claude for folder, title, summary and action items. Returns (info, error).
+    With `grandma_home`, the folder is a grandma sweater, or None when no sweater fits."""
     if not utterances:
         return None, None
-    folders = meeting_organize.list_folders(output_dir)
-    prompt = meeting_organize.build_prompt(utterances, folders, started_at)
+    if grandma_home:
+        sweaters = meeting_grandma.list_sweaters(grandma_home)
+        prompt = meeting_grandma.build_prompt(utterances, sweaters, started_at)
+    else:
+        folders = meeting_organize.list_folders(output_dir)
+        prompt = meeting_organize.build_prompt(utterances, folders, started_at)
     try:
         info = meeting_organize.run_claude(claude_path, prompt, cwd=session_dir, model=claude_model)
     except meeting_organize.OrganizeError as e:
         return None, str(e)
-    info["folder"] = meeting_organize.resolve_folder(info["folder"], [name for name, _ in folders])
+    if grandma_home:
+        info["folder"] = meeting_grandma.resolve_sweater(info["folder"], sweaters)
+    else:
+        info["folder"] = meeting_organize.resolve_folder(info["folder"], [name for name, _ in folders])
     return info, None
 
 
+def file_transcript(markdown, info, output_dir, started_at, duration, grandma_home=None):
+    """Writes the transcript where it belongs: a grandma sweater's meetings/ folder, a topic
+    folder under output_dir, or (unfiled) output_dir itself. Returns its path."""
+    folder = info.get("folder")
+    if grandma_home and folder:
+        dest_dir = meeting_grandma.meetings_dir(grandma_home, folder)
+    elif folder:
+        dest_dir = output_dir / folder
+    else:
+        dest_dir = output_dir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = transcript_path(dest_dir, started_at, info.get("title"))
+    path.write_text(markdown)
+    if folder:
+        meeting_organize.update_index(dest_dir, folder, path, started_at, duration, info["title"], info["summary"])
+        if grandma_home:
+            meeting_grandma.ensure_index_pointer(grandma_home, folder)
+    return path
+
+
+def propose_memory(result, grandma_home, info, path, utterances, started_at, claude_path, claude_model):
+    """Adds a grandma memory proposal for a meeting filed into a sweater. Never fails the run."""
+    if not (grandma_home and info.get("folder") and claude_path):
+        return
+    try:
+        proposal = meeting_grandma.write_proposal(grandma_home, info["folder"], path, utterances, started_at,
+                                                  claude_path, claude_model)
+    except (meeting_organize.OrganizeError, OSError) as e:
+        result["proposalError"] = str(e)
+        return
+    if proposal:
+        result["proposal"] = str(proposal)
+
+
 def run(session_dir, output_dir, model, language, keychain_name, dictionary=None,
-        keep_audio=False, api_key=None, claude_path=None, claude_model=None):
+        keep_audio=False, api_key=None, claude_path=None, claude_model=None, grandma_home=None):
     status_file = session_dir / "status.json"
     if not status_file.exists():
         raise TranscribeError(f"No recording found in {session_dir}")
@@ -421,18 +464,13 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
 
     info, organize_error = None, None
     if claude_path:
-        info, organize_error = organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model)
+        info, organize_error = organize(utterances, output_dir, started_at, session_dir, claude_path, claude_model,
+                                        grandma_home)
     info = info or {}
 
     markdown = render_markdown(utterances, started_at, duration, online, notes, title=info.get("title"),
                                summary=info.get("summary"), action_items=info.get("action_items", ()))
-    dest_dir = output_dir / info["folder"] if info.get("folder") else output_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    path = transcript_path(dest_dir, started_at, info.get("title"))
-    path.write_text(markdown)
-    if info.get("folder"):
-        meeting_organize.update_index(dest_dir, info["folder"], path, started_at, duration,
-                                      info["title"], info["summary"])
+    path = file_transcript(markdown, info, output_dir, started_at, duration, grandma_home)
 
     if not keep_audio:
         for f in session_dir.iterdir():
@@ -446,10 +484,15 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
         "words": sum(len(u["text"].split()) for u in utterances),
         "speakers": speakers_in_order(utterances),
     }
+    if info.get("title"):
+        result["title"] = info["title"]
     if info.get("folder"):
-        result.update(folder=info["folder"], title=info["title"])
+        result["folder"] = info["folder"]
+    if grandma_home:
+        result["grandma"] = True
     if organize_error:
         result["organizeError"] = organize_error
+    propose_memory(result, grandma_home, info, path, utterances, started_at, claude_path, claude_model)
     return result
 
 
@@ -477,23 +520,22 @@ def parse_transcript_markdown(text):
     return started_at, duration, online, notes, utterances
 
 
-def refile(path, output_dir, claude_path, claude_model=None):
+def refile(path, output_dir, claude_path, claude_model=None, grandma_home=None):
     """Files an existing, unorganized transcript with Claude: adds title, summary and action items,
-    moves it into a topic folder and updates that folder's meetings.md."""
+    moves it into a topic folder (or grandma sweater) and updates that folder's meetings.md."""
     started_at, duration, online, notes, utterances = parse_transcript_markdown(path.read_text())
-    info, error = organize(utterances, output_dir, started_at, path.parent, claude_path, claude_model)
+    info, error = organize(utterances, output_dir, started_at, path.parent, claude_path, claude_model, grandma_home)
     if error or not info:
         raise TranscribeError(error or "Nothing to file: the transcript has no speech")
+    if not info.get("folder"):
+        raise TranscribeError("No grandma sweater fits this meeting")
     markdown = render_markdown(utterances, started_at, duration, online, notes, title=info["title"],
                                summary=info["summary"], action_items=info["action_items"])
-    dest_dir = output_dir / info["folder"]
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    new_path = transcript_path(dest_dir, started_at, info["title"])
-    new_path.write_text(markdown)
-    meeting_organize.update_index(dest_dir, info["folder"], new_path, started_at, duration,
-                                  info["title"], info["summary"])
+    new_path = file_transcript(markdown, info, output_dir, started_at, duration, grandma_home)
     path.unlink()
-    return {"path": str(new_path), "folder": info["folder"], "title": info["title"]}
+    result = {"path": str(new_path), "folder": info["folder"], "title": info["title"]}
+    propose_memory(result, grandma_home, info, new_path, utterances, started_at, claude_path, claude_model)
+    return result
 
 
 def main(argv=None):
@@ -510,13 +552,17 @@ def main(argv=None):
     parser.add_argument("--organize-with-claude", metavar="CLAUDE_PATH", type=Path,
                         help="file the transcript into a topic folder using this `claude` CLI")
     parser.add_argument("--claude-model")
+    parser.add_argument("--grandma-home", type=Path,
+                        help="file into this grandma memory home's sweaters (needs --organize-with-claude)")
     args = parser.parse_args(argv)
+    grandma_home = args.grandma_home.expanduser() if args.grandma_home else None
 
     if args.refile:
         if not args.organize_with_claude:
             parser.error("--refile needs --organize-with-claude")
         try:
-            result = refile(args.refile, args.output_dir.expanduser(), args.organize_with_claude, args.claude_model)
+            result = refile(args.refile, args.output_dir.expanduser(), args.organize_with_claude, args.claude_model,
+                            grandma_home)
         except TranscribeError as e:
             print(json.dumps({"error": str(e)}))
             return 1
@@ -527,7 +573,7 @@ def main(argv=None):
     try:
         result = run(args.session_dir, args.output_dir.expanduser(), args.model, args.language,
                      args.keychain_name, args.dictionary, args.keep_audio,
-                     claude_path=args.organize_with_claude, claude_model=args.claude_model)
+                     claude_path=args.organize_with_claude, claude_model=args.claude_model, grandma_home=grandma_home)
     except TranscribeError as e:
         print(json.dumps({"error": str(e)}))
         return 1
