@@ -16,7 +16,7 @@ local M = { core = core, meeting = meeting }
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
 local enabled = true
-local recorder, startedAt, releasedAt, cancelled, sendOnExit
+local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTimer
 local delivered = 0
 local indicator, menubar, apiKey
 
@@ -64,6 +64,10 @@ local function deliver(raw, dict, via)
     at = os.date("!%Y-%m-%dT%H:%M:%SZ"), via = via, model = cfg.model, language = cfg.language,
     seconds = releasedAt and startedAt and math.floor((releasedAt - startedAt) * 100 + 0.5) / 100,
     deepgramMs = releasedAt and math.floor((transcribedAt - releasedAt) * 1000 + 0.5),
+    -- Time from pressing the key to the first audio from the mic: speech before that is lost.
+    micMs = micReadyAt and startedAt and math.floor((micReadyAt - startedAt) * 1000 + 0.5),
+    tailSeconds = cfg.tailSeconds,
+    device = (function() local d = hs.audiodevice.defaultInputDevice() return d and d:name() end)(),
     raw = raw,
   }
   if raw == "" then return history.save(recording, record) end
@@ -163,16 +167,15 @@ local function startStreaming(helper)
   end
   local dict = loadDictionary()
   local _, keyterms = cleanup.namesFor(dict)
-  local output, live = "", false
+  local output = ""
   recorder = hs.task.new(helper, function(_, stdout)
     recorder = nil
     finishStreaming(output .. (stdout or ""), dict)
   end, function(_, stdout)
     output = output .. (stdout or "")
-    -- Bluetooth mics (AirPods) take a moment to switch on; say when they're actually live.
-    if not live and recorder and not sendOnExit and output:find('"event":"listening"', 1, true) then
-      live = true
-      setIndicator("🎙 Listening…")
+    -- When the mic actually started delivering audio (recorded to measure lost first words).
+    if not micReadyAt and output:find('"event":"listening"', 1, true) then
+      micReadyAt = hs.timer.secondsSinceEpoch()
     end
     return true
   end, { "--stream", "--url", core.buildStreamUrl(cfg, keyterms), "--save", audioPath })
@@ -184,12 +187,12 @@ local function startStreaming(helper)
     hs.alert.show("Could not start recording, see Hammerspoon console")
     return
   end
-  setIndicator("🎧 Connecting mic…")
+  setIndicator("🎙 Listening…")
 end
 
 local function startRecording()
   os.remove(audioPath)
-  cancelled, sendOnExit = false, false
+  cancelled, sendOnExit, micReadyAt = false, false, nil
   startedAt = hs.timer.secondsSinceEpoch()
   local helper = meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder"
   if cfg.streaming and hs.fs.attributes(helper) then return startStreaming(helper) end
@@ -215,13 +218,19 @@ local function startRecording()
 end
 
 local function stopRecording()
-  if not recorder then return end
+  if not recorder or tailTimer then return end
   releasedAt = hs.timer.secondsSinceEpoch()
   local duration = releasedAt - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
   if sendOnExit then
     setIndicator("⏳ Transcribing…")
-    recorder:interrupt() -- SIGINT: sox finalises the WAV / the streamer flushes Deepgram's results
+    -- Keep recording a moment after the key comes up: people let go while the last word is still
+    -- being spoken, and the mic delivers audio slightly late.
+    local task = recorder
+    tailTimer = hs.timer.doAfter(cfg.tailSeconds, function()
+      tailTimer = nil
+      if recorder == task then task:interrupt() end -- SIGINT: finalise the WAV / flush Deepgram's results
+    end)
   else
     recorder:terminate() -- SIGTERM: discard
   end
@@ -311,6 +320,7 @@ function M.stop()
   cleanup.teardown()
   if M.menuHotkey then M.menuHotkey:delete() M.menuHotkey = nil end
   if M.popup then M.popup:delete() M.popup = nil end
+  if tailTimer then tailTimer:stop() tailTimer = nil end
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

@@ -45,6 +45,7 @@ describe("mergeConfig", function()
     assert.has_error(function() core.mergeConfig({ language = "" }) end)
     assert.has_error(function() core.mergeConfig({ model = 3 }) end)
     assert.has_error(function() core.mergeConfig({ minSeconds = -1 }) end)
+    assert.has_error(function() core.mergeConfig({ tailSeconds = "0.5" }) end)
   end)
 end)
 

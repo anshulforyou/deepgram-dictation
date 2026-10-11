@@ -273,6 +273,7 @@ deepgramDictation.start({
 | `smartFormat` | `true` | Format numbers, dates, emails, etc. |
 | `streaming` | `true` | Stream audio while you speak. `false` uploads the recording after you release (slower) |
 | `minSeconds` | `0.3` | Shorter presses are ignored |
+| `tailSeconds` | `0.5` | Keep recording this long after you release, so the last word isn't cut off |
 | `restoreClipboard` | `true` | Put your previous clipboard back after pasting |
 | `showMenubar` | `true` | Show the 🎙 menu bar item |
 | `dictionary` | `~/.hammerspoon/deepgram-dictionary.json` | Path to your dictionary |
@@ -367,7 +368,7 @@ Open the Hammerspoon console (menu bar icon → Console). Lines from this tool s
 | "Deepgram API key not found" | Add the key (see [Updating your API key](#updating-your-api-key)) |
 | "Deepgram error (401)" | The key is invalid or revoked. Replace it |
 | "No speech detected" | Check the input device in System Settings → Sound, and that Hammerspoon has microphone access. The alert says when the mic level was very low |
-| First word missing with AirPods | Bluetooth mics take 1-2 s to switch on. Wait for **🎙 Listening…** (it shows **🎧 Connecting mic…** until then) |
+| First word missing | The mic takes a moment to switch on after you press the key (1-2 s for Bluetooth mics such as AirPods). Each saved dictation records this as `micMs` |
 | Text is pasted twice | Another dictation app (Wispr Flow, Superwhisper…) is also listening on Fn. Quit it |
 | "sox not found" | `brew install sox` |
 | Meeting transcript only has your voice | Allow DeepgramRecorder under System Settings → Privacy & Security → **System Audio Recording Only**, then start a new recording |

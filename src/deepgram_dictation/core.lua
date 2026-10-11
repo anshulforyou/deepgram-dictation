@@ -10,6 +10,7 @@ core.DEFAULTS = {
   smartFormat  = true,
   streaming    = true,        -- stream audio while the key is held (needs DeepgramRecorder.app)
   minSeconds   = 0.3,         -- releases shorter than this are treated as accidental taps
+  tailSeconds  = 0.5,         -- keep recording this long after the key is released
   recBinary    = nil,         -- path to sox's `rec`; auto-detected when nil
   dictionary   = nil,         -- path to dictionary JSON; defaults to <hs.configdir>/deepgram-dictionary.json
   keychainName = "deepgram-api-key",
@@ -143,8 +144,10 @@ function core.mergeConfig(overrides)
   if type(cfg.model) ~= "string" or cfg.model == "" then
     error("deepgram-dictation: model must be a non-empty string", 2)
   end
-  if type(cfg.minSeconds) ~= "number" or cfg.minSeconds < 0 then
-    error("deepgram-dictation: minSeconds must be a non-negative number", 2)
+  for _, name in ipairs({ "minSeconds", "tailSeconds" }) do
+    if type(cfg[name]) ~= "number" or cfg[name] < 0 then
+      error("deepgram-dictation: " .. name .. " must be a non-negative number", 2)
+    end
   end
   if not core.MEETING_MODES[cfg.meetingMode] then
     error("deepgram-dictation: meetingMode must be \"online\" or \"inPerson\"", 2)
