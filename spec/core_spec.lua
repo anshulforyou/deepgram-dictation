@@ -30,6 +30,17 @@ describe("mergeConfig", function()
     assert.has_error(function() core.mergeConfig({ hotkey = "capsLock" }) end)
   end)
 
+  it("validates cleanup options", function()
+    local cfg = core.mergeConfig({ cleanup = true, keepDictations = 200 })
+    assert.is_true(cfg.cleanup)
+    assert.are.equal("claude-haiku-5-5", cfg.cleanupModel)
+    assert.are.equal(200, cfg.keepDictations)
+    assert.has_error(function() core.mergeConfig({ cleanupTimeout = 0 }) end)
+    assert.has_error(function() core.mergeConfig({ keepDictations = -1 }) end)
+    assert.has_error(function() core.mergeConfig({ keepDictations = 2.5 }) end)
+    assert.has_error(function() core.mergeConfig({ keytermNames = "50" }) end)
+  end)
+
   it("rejects invalid language, model and minSeconds", function()
     assert.has_error(function() core.mergeConfig({ language = "" }) end)
     assert.has_error(function() core.mergeConfig({ model = 3 }) end)
@@ -96,16 +107,18 @@ end)
 
 describe("normalizeDictionary", function()
   it("returns empty lists for non-table input", function()
-    assert.are.same({ keyterms = {}, replacements = {} }, core.normalizeDictionary(nil))
-    assert.are.same({ keyterms = {}, replacements = {} }, core.normalizeDictionary("oops"))
+    assert.are.same({ keyterms = {}, names = {}, replacements = {} }, core.normalizeDictionary(nil))
+    assert.are.same({ keyterms = {}, names = {}, replacements = {} }, core.normalizeDictionary("oops"))
   end)
 
   it("drops malformed entries", function()
     local dict = core.normalizeDictionary({
       keyterms = { "Good", "", "   ", 42 },
+      names = { "Anant", 7, "" },
       replacements = { { from = "btw", to = "by the way" }, { from = "" , to = "x" }, { from = "a" }, "bad" },
     })
     assert.are.same({ "Good" }, dict.keyterms)
+    assert.are.same({ "Anant" }, dict.names)
     assert.are.same({ { from = "btw", to = "by the way" } }, dict.replacements)
   end)
 
@@ -480,5 +493,113 @@ describe("parseStreamOutput", function()
       assert.are.equal("Saving transcript…", (core.indicatorText("stopping", false, 0)))
       assert.is_nil(core.indicatorText("idle", false, 0))
     end)
+  end)
+end)
+
+describe("mergeNames", function()
+  it("puts dictionary names first and drops case-insensitive duplicates", function()
+    local names = core.mergeNames({ names = { "Anant", " moksh " } },
+      { names = { "Moksh", "Anshul", "anant", "Slack" } }, 10)
+    assert.are.same({ "Anant", "moksh", "Anshul", "Slack" }, names)
+  end)
+
+  it("builds keyterms from dictionary keyterms and names plus the top extracted keyterms", function()
+    local _, keyterms = core.mergeNames({ keyterms = { "Deepgram" }, names = { "Anant" } },
+      { names = { "Anshul", "Moksh", "Arihant", "Slack" }, keyterms = { "Anshul", "Moksh", "Arihant" } }, 2)
+    assert.are.same({ "Deepgram", "Anant", "Anshul", "Moksh" }, keyterms)
+  end)
+
+  it("never adds a keyterm twice", function()
+    local _, keyterms = core.mergeNames({ keyterms = { "Anant" }, names = { "anant" } },
+      { keyterms = { "ANANT", "Moksh" } }, 5)
+    assert.are.same({ "Anant", "Moksh" }, keyterms)
+  end)
+
+  it("works without extracted names", function()
+    local names, keyterms = core.mergeNames({ keyterms = { "X" } }, nil, 50)
+    assert.are.same({}, names)
+    assert.are.same({ "X" }, keyterms)
+  end)
+end)
+
+describe("cleanupSystemPrompt", function()
+  it("appends the names list", function()
+    assert.are.equal("Do it.\n\nNames list:\nAnant, Moksh\n",
+      core.cleanupSystemPrompt("Do it.\n\n", { "Anant", "Moksh" }))
+  end)
+
+  it("leaves the instructions alone without names", function()
+    assert.are.equal("Do it.", core.cleanupSystemPrompt("Do it.", {}))
+  end)
+end)
+
+describe("cleanupRequest", function()
+  it("wraps the transcript, caches the system prompt and turns thinking off", function()
+    local body = core.cleanupRequest(core.mergeConfig({ cleanup = true }), "SYS", "go life")
+    assert.are.equal("claude-haiku-5-5", body.model)
+    assert.are.same({ type = "disabled" }, body.thinking)
+    assert.are.equal("low", body.output_config.effort)
+    assert.are.equal("SYS", body.system[1].text)
+    assert.are.same({ type = "ephemeral" }, body.system[1].cache_control)
+    assert.are.equal("<transcript>go life</transcript>", body.messages[1].content)
+    assert.is_true(body.max_tokens >= 64)
+  end)
+
+  it("gives long dictations enough output room", function()
+    local text = string.rep("word ", 400)
+    assert.is_true(core.cleanupRequest(core.mergeConfig(), "S", text).max_tokens > #text / 4)
+  end)
+end)
+
+describe("parseCleanup", function()
+  local function resp(text, stop)
+    return { type = "message", stop_reason = stop or "end_turn", content = { { type = "text", text = text } } }
+  end
+  local raw = "So I I was going to, I think we should go life with the the app on Tuesday, no, Wednesday."
+
+  it("returns the cleaned text, trimmed", function()
+    assert.are.equal("I think we should go live with the app on Wednesday.",
+      core.parseCleanup(resp("  I think we should go live with the app on Wednesday.\n"), raw))
+  end)
+
+  it("strips transcript tags echoed back", function()
+    assert.are.equal("go live", core.parseCleanup(resp("<transcript>go live</transcript>"), "go life"))
+  end)
+
+  it("rejects an answer that grew (Claude replied instead of cleaning)", function()
+    local text, why = core.parseCleanup(resp("The capital of France is Paris, a city on the Seine."),
+      "what is the capital of France")
+    assert.is_nil(text)
+    assert.matches("grew", why)
+  end)
+
+  it("rejects an answer that shrank drastically", function()
+    local text, why = core.parseCleanup(resp("Ship Wednesday."), raw)
+    assert.is_nil(text)
+    assert.matches("shrank", why)
+  end)
+
+  it("allows big relative cuts on short dictations", function()
+    assert.are.equal("the app", core.parseCleanup(resp("the app"), "the the the app"))
+  end)
+
+  it("rejects truncated, empty and error responses", function()
+    assert.is_nil(core.parseCleanup(resp("I think", "max_tokens"), raw))
+    assert.is_nil(core.parseCleanup(resp("   "), raw))
+    local text, why = core.parseCleanup({ type = "error", error = { message = "overloaded" } }, raw)
+    assert.is_nil(text)
+    assert.matches("overloaded", why)
+    assert.is_nil(core.parseCleanup(nil, raw))
+  end)
+end)
+
+describe("dictationsToPrune", function()
+  it("returns the oldest stems beyond the limit", function()
+    local stems = { "2026-10-11_10-00-02-000", "2026-10-11_10-00-00-500", "2026-10-11_10-00-01-000" }
+    assert.are.same({ "2026-10-11_10-00-00-500" }, core.dictationsToPrune(stems, 2))
+  end)
+
+  it("returns nothing when under the limit", function()
+    assert.are.same({}, core.dictationsToPrune({ "a", "b" }, 200))
   end)
 end)

@@ -34,6 +34,14 @@ core.DEFAULTS = {
   claudePath       = nil,       -- `claude` CLI path; auto-detected when nil
   claudeModel      = nil,       -- e.g. "opus"; nil uses the CLI's default model
   grandmaHome      = nil,       -- e.g. "~/.grandma": file into grandma sweaters + write memory proposals
+
+  -- Cleaning up dictation with Claude (sends each dictation's text to Anthropic's API)
+  cleanup          = false,     -- remove repeats and false starts, apply self-corrections, fix misheard words
+  cleanupModel     = "claude-haiku-5-5",
+  cleanupTimeout   = 2.5,       -- seconds; when Claude is slower the raw transcript is pasted
+  anthropicKeychainName = "anthropic-api-key",
+  keytermNames     = 50,        -- names (most mentioned first) Deepgram is primed with; all go to Claude
+  keepDictations   = 0,         -- keep the last N dictations (audio + text) for review and replay
 }
 
 core.OPTIONS = {
@@ -107,6 +115,11 @@ core.MEETING_TITLES = {
   { pattern = "Zoom Meeting",                      name = "Zoom" },
 }
 
+-- Where the recorder app, meeting sessions, saved dictations and extracted names live.
+function core.supportDir()
+  return os.getenv("HOME") .. "/Library/Application Support/deepgram-dictation"
+end
+
 core.API_URL = "https://api.deepgram.com/v1/listen"
 core.STREAM_URL = "wss://api.deepgram.com/v1/listen"
 
@@ -135,6 +148,15 @@ function core.mergeConfig(overrides)
   end
   if not core.MEETING_MODES[cfg.meetingMode] then
     error("deepgram-dictation: meetingMode must be \"online\" or \"inPerson\"", 2)
+  end
+  if type(cfg.cleanupTimeout) ~= "number" or cfg.cleanupTimeout <= 0 then
+    error("deepgram-dictation: cleanupTimeout must be a positive number of seconds", 2)
+  end
+  for _, name in ipairs({ "keepDictations", "keytermNames" }) do
+    local n = cfg[name]
+    if math.type(n) ~= "integer" or n < 0 then
+      error("deepgram-dictation: " .. name .. " must be a non-negative integer", 2)
+    end
   end
   for _, name in ipairs({ "meetingHotkey", "menuHotkey" }) do
     local hk = cfg[name]
@@ -180,13 +202,15 @@ function core.buildStreamUrl(cfg, keyterms)
     { "encoding=linear16", "sample_rate=16000", "channels=1" })
 end
 
--- Normalises a decoded dictionary JSON value into { keyterms = {...}, replacements = {...} },
--- dropping malformed entries.
+-- Normalises a decoded dictionary JSON value into { keyterms = {...}, names = {...},
+-- replacements = {...} }, dropping malformed entries.
 function core.normalizeDictionary(data)
-  local dict = { keyterms = {}, replacements = {} }
+  local dict = { keyterms = {}, names = {}, replacements = {} }
   if type(data) ~= "table" then return dict end
-  for _, term in ipairs(data.keyterms or {}) do
-    if type(term) == "string" and term:match("%S") then table.insert(dict.keyterms, term) end
+  for _, field in ipairs({ "keyterms", "names" }) do
+    for _, term in ipairs(type(data[field]) == "table" and data[field] or {}) do
+      if type(term) == "string" and term:match("%S") then table.insert(dict[field], term) end
+    end
   end
   for _, r in ipairs(data.replacements or {}) do
     if type(r) == "table" and type(r.from) == "string" and r.from:match("%S")
@@ -197,6 +221,90 @@ function core.normalizeDictionary(data)
   -- Longest phrases first so "my email address" wins over "my email".
   table.sort(dict.replacements, function(a, b) return #a.from > #b.from end)
   return dict
+end
+
+-- Names for cleanup: the dictionary's own `names` first, then `extracted.names` (e.g. from
+-- grandma memory, most mentioned first), without case-insensitive duplicates. Returns all names,
+-- and the Deepgram keyterms: the dictionary's keyterms and names, then the first `limit` of
+-- `extracted.keyterms` (extracted names minus common words).
+function core.mergeNames(dict, extracted, limit)
+  extracted = extracted or {}
+  local names, seen = {}, {}
+  local function add(list, name)
+    local key = type(name) == "string" and name:match("^%s*(.-)%s*$"):lower()
+    if key and key ~= "" and not seen[key] then
+      seen[key] = true
+      table.insert(list, (name:match("^%s*(.-)%s*$")))
+    end
+  end
+  for _, n in ipairs(dict.names or {}) do add(names, n) end
+  for _, n in ipairs(extracted.names or {}) do add(names, n) end
+  local keyterms = {}
+  seen = {}
+  for _, t in ipairs(dict.keyterms or {}) do add(keyterms, t) end
+  for _, t in ipairs(dict.names or {}) do add(keyterms, t) end
+  local extra = extracted.keyterms or {}
+  for i = 1, math.min(limit or 0, #extra) do add(keyterms, extra[i]) end
+  return names, keyterms
+end
+
+-- System prompt for cleanup: the instructions plus the names to spell correctly.
+function core.cleanupSystemPrompt(instructions, names)
+  if not names or #names == 0 then return instructions end
+  return instructions:gsub("%s+$", "") .. "\n\nNames list:\n" .. table.concat(names, ", ") .. "\n"
+end
+
+-- Messages API request body for cleaning `text`. The system prompt is the same on every
+-- dictation, so it is cached; thinking is off because the edit is mechanical and latency matters.
+function core.cleanupRequest(cfg, systemPrompt, text)
+  return {
+    model = cfg.cleanupModel,
+    max_tokens = 64 + math.ceil(#text / 2), -- English runs about 4 characters a token
+    thinking = { type = "disabled" },
+    output_config = { effort = "low" },
+    system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
+    messages = { { role = "user", content = "<transcript>" .. text .. "</transcript>" } },
+  }
+end
+
+function core.wordCount(text)
+  local n = 0
+  for _ in tostring(text):gmatch("%S+") do n = n + 1 end
+  return n
+end
+
+-- The cleaned text from a decoded Messages API response, or nil plus why it was rejected.
+-- Cleanup only ever removes or swaps words, so an answer that grew (Claude replying to the
+-- dictation) or shrank drastically (a summary) is rejected and the raw text pasted instead.
+function core.parseCleanup(resp, raw)
+  if type(resp) ~= "table" then return nil, "unexpected response" end
+  if resp.type == "error" then
+    return nil, "api error: " .. tostring(type(resp.error) == "table" and resp.error.message or resp.error)
+  end
+  if resp.stop_reason ~= "end_turn" then return nil, "stopped: " .. tostring(resp.stop_reason) end
+  local parts = {}
+  for _, block in ipairs(type(resp.content) == "table" and resp.content or {}) do
+    if type(block) == "table" and block.type == "text" then table.insert(parts, block.text) end
+  end
+  local text = table.concat(parts):gsub("</?transcript>", ""):match("^%s*(.-)%s*$")
+  if text == "" then return nil, "empty answer" end
+  local before, after = core.wordCount(raw), core.wordCount(text)
+  if after > before + 2 then return nil, string.format("answer grew from %d to %d words", before, after) end
+  if before >= 6 and after < before * 0.4 then
+    return nil, string.format("answer shrank from %d to %d words", before, after)
+  end
+  return text
+end
+
+-- Stems of saved dictations to delete so that only the newest `keep` remain. Stems are
+-- timestamps, so they sort oldest first.
+function core.dictationsToPrune(stems, keep)
+  local sorted = {}
+  for _, s in ipairs(stems) do table.insert(sorted, s) end
+  table.sort(sorted)
+  local out = {}
+  for i = 1, #sorted - keep do table.insert(out, sorted[i]) end
+  return out
 end
 
 -- Case-insensitive Lua pattern matching `phrase` literally, anchored on word boundaries
