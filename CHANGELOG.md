@@ -6,25 +6,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- A floating pill while a meeting is recorded, showing the meeting and elapsed time, with pause
-  and stop buttons. Draggable; `showMeetingIndicator = false` hides it.
-- Pausing a meeting recording (pill, menu). Paused time isn't recorded or sent to Deepgram, and
-  the transcript notes how long it was paused.
-- A transcript warning when an online meeting's computer audio captured almost nothing, so
-  missing remote speakers don't go unnoticed.
-
-### Fixed
-
-- Mic and computer-audio tracks drifting apart (10+ seconds over an hour) when the system audio
-  tap skipped time. The recorder now writes audio by timestamp, filling gaps with silence, and
-  transcription re-aligns the tracks from the speaker echo the mic picks up. Without this, other
-  people's speech heard through the speakers was left in the transcript as "Me".
-- Remote speech blended into your own sentences when the call plays through the speakers: echo
-  is now also removed word by word, not only as whole utterances.
-
-## [0.2.0] - 2026-10-09
+## [0.2.0] - 2026-10-11
 
 ### Added
 
@@ -53,11 +35,20 @@ All notable changes to this project are documented here. The format follows
   channel. A watchdog notes in the transcript if the mic ever delivers only digital silence.
 - The recorder never uses voice processing: enabling it alongside a call app cut off the call
   app's microphone. CPU use while recording dropped from ~12-17% to ~1-2% of one core.
+- A floating pill while a meeting is recorded, showing the meeting and elapsed time, with pause
+  and stop buttons. Draggable; `showMeetingIndicator = false` hides it.
+- Pausing a meeting recording. Paused time isn't recorded or sent to Deepgram, and the
+  transcript notes how long it was paused.
+- Meeting tracks stay aligned when the system audio tap skips time: the recorder writes audio by
+  timestamp, and transcription re-aligns the tracks from the speaker echo the mic picks up.
+- Echo removal also works word by word, so remote speech blended into your own sentences (when
+  the call plays through the speakers) isn't labelled "Me".
+- A transcript warning when an online meeting's computer audio captured almost nothing.
 - "File N unfiled transcripts with Claude" menu item and `meeting_transcribe.py --refile`, for
   transcripts made while Claude was unavailable.
 - Meeting options: `meetingHotkey`, `meetingMode`, `meetingLanguage`, `transcriptsDir`,
   `keepMeetingAudio`, `recorderApp`, `python`, `detectMeetings`, `autoStopMeetings`,
-  `menuHotkey`, `organizeWithClaude`, `claudePath`, `claudeModel`.
+  `menuHotkey`, `showMeetingIndicator`, `organizeWithClaude`, `claudePath`, `claudeModel`.
 
 ## [0.1.0] - 2026-10-09
 
