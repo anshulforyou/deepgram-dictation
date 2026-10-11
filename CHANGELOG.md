@@ -11,6 +11,13 @@ All notable changes to this project are documented here. The format follows
 - Filing into [grandma](https://github.com/anshulforyou/grandma): with `grandmaHome`, meetings go
   to the matching sweater's `meetings/` folder with an index and an INDEX.md pointer, and each one
   gets a memory proposal for `grandma review`.
+- Dictation cleanup with Claude (`cleanup`): removes repeated words and false starts, applies
+  spoken self-corrections, and fixes misheard words and names before pasting. Falls back to the
+  raw transcript when Claude is slow or answers with something that isn't a cleanup.
+- `names` in the dictionary, and names read from grandma memory once a day: spelled correctly by
+  cleanup and listened for by Deepgram.
+- `keepDictations`: keeps recent dictations to review, flag from the menu, and replay with
+  `make eval-dictation`.
 
 ## [0.2.0] - 2026-10-11
 

@@ -8,13 +8,16 @@
 local core = require("deepgram_dictation.core")
 local meeting = require("deepgram_dictation.meeting")
 local detector = require("deepgram_dictation.detector")
+local cleanup = require("deepgram_dictation.cleanup")
+local history = require("deepgram_dictation.history")
 
 local M = { core = core, meeting = meeting }
 
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
 local enabled = true
-local recorder, startedAt, cancelled, sendOnExit
+local recorder, startedAt, releasedAt, cancelled, sendOnExit
+local delivered = 0
 local indicator, menubar, apiKey
 
 local function log(fmt, ...) print("[deepgram-dictation] " .. string.format(fmt, ...)) end
@@ -50,6 +53,32 @@ local function pasteText(text)
   end
 end
 
+-- Cleans the transcript, pastes it and records the dictation. The recording is moved off
+-- audioPath first, so a dictation started while this one is still being cleaned can't clobber it.
+local function deliver(raw, dict, via)
+  local transcribedAt = hs.timer.secondsSinceEpoch()
+  delivered = delivered + 1
+  local recording = audioPath:gsub("%.wav$", "-" .. delivered .. ".wav")
+  if not os.rename(audioPath, recording) then recording = audioPath end
+  local record = {
+    at = os.date("!%Y-%m-%dT%H:%M:%SZ"), via = via, model = cfg.model, language = cfg.language,
+    seconds = releasedAt and startedAt and math.floor((releasedAt - startedAt) * 100 + 0.5) / 100,
+    deepgramMs = releasedAt and math.floor((transcribedAt - releasedAt) * 1000 + 0.5),
+    raw = raw,
+  }
+  if raw == "" then return history.save(recording, record) end
+  local names = cleanup.namesFor(dict)
+  cleanup.run(raw, names, function(text, info)
+    local pasted = core.applyReplacements(text, dict.replacements)
+    setIndicator(nil)
+    pasteText(pasted)
+    record.cleanup = info
+    record.cleaned = info.status == "ok" and text or nil
+    record.pasted = pasted
+    history.save(recording, record)
+  end)
+end
+
 local function transcribe()
   local key = getApiKey()
   if not key then
@@ -61,16 +90,17 @@ local function transcribe()
   if not f then setIndicator(nil) return end
   local audio = f:read("a")
   f:close()
-  os.remove(audioPath)
 
   local dict = loadDictionary()
+  local _, keyterms = cleanup.namesFor(dict)
   setIndicator("⏳ Transcribing…")
-  hs.http.asyncPost(core.buildListenUrl(cfg, dict.keyterms), audio, {
+  hs.http.asyncPost(core.buildListenUrl(cfg, keyterms), audio, {
     ["Authorization"] = "Token " .. key,
     ["Content-Type"] = "audio/wav",
   }, function(status, body)
-    setIndicator(nil)
     if status ~= 200 then
+      setIndicator(nil)
+      os.remove(audioPath)
       log("HTTP %s: %s", tostring(status), tostring(body))
       if status == 401 or status == 403 then apiKey = nil end
       hs.alert.show("Deepgram error (" .. tostring(status) .. "), see Hammerspoon console")
@@ -79,13 +109,17 @@ local function transcribe()
     local ok, resp = pcall(hs.json.decode, body)
     local text, err = core.extractTranscript(ok and resp or nil)
     if not text then
+      setIndicator(nil)
+      os.remove(audioPath)
       log("bad response: %s", err)
       hs.alert.show("Deepgram returned an unexpected response")
-    elseif text == "" then
-      hs.alert.show("No speech detected", 1)
-    else
-      pasteText(core.applyReplacements(text, dict.replacements))
+      return
     end
+    if text == "" then
+      setIndicator(nil)
+      hs.alert.show("No speech detected", 1)
+    end
+    deliver(text, dict, "upload")
   end)
 end
 
@@ -108,12 +142,11 @@ local function finishStreaming(stdout, dict)
   end
   local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
   if type(result.transcript) == "string" then
-    setIndicator(nil)
-    if result.transcript == "" then alertNoSpeech() end
-    os.remove(audioPath)
-    if result.transcript ~= "" then
-      pasteText(core.applyReplacements(result.transcript, dict.replacements))
+    if result.transcript == "" then
+      setIndicator(nil)
+      alertNoSpeech()
     end
+    deliver(result.transcript, dict, "stream")
   else
     -- Streaming failed (e.g. network blip): upload the saved recording instead.
     log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
@@ -129,6 +162,7 @@ local function startStreaming(helper)
     return
   end
   local dict = loadDictionary()
+  local _, keyterms = cleanup.namesFor(dict)
   local output, live = "", false
   recorder = hs.task.new(helper, function(_, stdout)
     recorder = nil
@@ -141,7 +175,7 @@ local function startStreaming(helper)
       setIndicator("🎙 Listening…")
     end
     return true
-  end, { "--stream", "--url", core.buildStreamUrl(cfg, dict.keyterms), "--save", audioPath })
+  end, { "--stream", "--url", core.buildStreamUrl(cfg, keyterms), "--save", audioPath })
   recorder:setEnvironment({
     DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
   })
@@ -182,7 +216,8 @@ end
 
 local function stopRecording()
   if not recorder then return end
-  local duration = hs.timer.secondsSinceEpoch() - startedAt
+  releasedAt = hs.timer.secondsSinceEpoch()
+  local duration = releasedAt - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
   if sendOnExit then
     setIndicator("⏳ Transcribing…")
@@ -206,6 +241,17 @@ local function buildMenu()
       fn = function() enabled = not enabled updateMenubar() end },
     { title = "-" },
   }
+  if history.enabled() then
+    table.insert(items, { title = "Flag last dictation as wrong", fn = function()
+      local record = history.flagLast()
+      hs.alert.show(record and "Flagged. Find it in the dictation history." or "No saved dictation yet", 2)
+    end })
+    table.insert(items, { title = "Open dictation history", fn = function()
+      hs.fs.mkdir(history.dir())
+      hs.open(history.dir())
+    end })
+    table.insert(items, { title = "-" })
+  end
   for _, item in ipairs(meeting.menuItems()) do table.insert(items, item) end
   table.insert(items, { title = "-" })
   table.insert(items, { title = "Reload Hammerspoon config", fn = hs.reload })
@@ -247,10 +293,13 @@ function M.start(overrides)
       M.popup:popupMenu(hs.mouse.absolutePosition(), true)
     end)
   end
+  cleanup.setup(cfg)
+  history.setup(cfg)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
-  log("ready (hotkey=%s, model=%s, language=%s)", cfg.hotkey, cfg.model, cfg.language)
+  log("ready (hotkey=%s, model=%s, language=%s, cleanup=%s)", cfg.hotkey, cfg.model, cfg.language,
+    tostring(cfg.cleanup))
   return M
 end
 
@@ -259,6 +308,7 @@ function M.stop()
   if M.keyTap then M.keyTap:stop() M.keyTap = nil end
   detector.teardown()
   meeting.teardown()
+  cleanup.teardown()
   if M.menuHotkey then M.menuHotkey:delete() M.menuHotkey = nil end
   if M.popup then M.popup:delete() M.popup = nil end
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
