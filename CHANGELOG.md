@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format follows
   tap skipped time. The recorder now writes audio by timestamp, filling gaps with silence, and
   transcription re-aligns the tracks from the speaker echo the mic picks up. Without this, other
   people's speech heard through the speakers was left in the transcript as "Me".
+- Remote speech blended into your own sentences when the call plays through the speakers: echo
+  is now also removed word by word, not only as whole utterances.
 
 ## [0.2.0] - 2026-10-09
 

@@ -36,6 +36,9 @@ MIN_TRACK_BYTES = 2048  # smaller files contain no usable audio
 ALIGN_NGRAM = 4         # words in a row that must match to count as the mic hearing the speakers
 ALIGN_MIN_MATCHES = 20  # fewer matches than this: no echo to align on (e.g. headphones)
 ALIGN_WINDOW = 180.0    # seconds either side of an utterance whose matches set its correction
+ECHO_RUN = 3            # words in a row heard on both tracks that count as echo inside a mic utterance
+ECHO_WORD_WINDOW = 2.0  # seconds between the mic and computer-audio copies of an echoed word run
+ECHO_SCRAP = 2          # leftover pieces this short between echoed runs are misheard echo too
 FEW_REMOTE_WORDS = 0.03 # computer audio with fewer words than this share of the mic's is suspect
 
 
@@ -113,20 +116,25 @@ def utterances_from_response(resp, track, offset=0.0):
             "start": float(u.get("start", 0)) + offset,
             "end": float(u.get("end", 0)) + offset,
             "text": text,
+            "words": [_word(w, offset) for w in u.get("words") or [] if _token(w)],
         })
     return out
+
+
+def _token(w):
+    return re.sub(r"[^\w']", "", (w.get("punctuated_word") or w.get("word") or "").lower())
+
+
+def _word(w, offset):
+    return {"token": _token(w), "text": w.get("punctuated_word") or w.get("word"),
+            "start": float(w.get("start", 0)) + offset, "end": float(w.get("end", 0)) + offset}
 
 
 def words_from_response(resp, offset=0.0):
     """[(word, start)] on the session timeline, lowercased and without punctuation."""
     channels = (resp.get("results") or {}).get("channels") or [{}]
     words = ((channels[0].get("alternatives") or [{}])[0]).get("words") or []
-    out = []
-    for w in words:
-        token = re.sub(r"[^\w']", "", (w.get("punctuated_word") or w.get("word") or "").lower())
-        if token:
-            out.append((token, float(w.get("start", 0)) + offset))
-    return out
+    return [(_token(w), float(w.get("start", 0)) + offset) for w in words if _token(w)]
 
 
 def echo_lags(mic_words, system_words, n=ALIGN_NGRAM):
@@ -143,23 +151,80 @@ def echo_lags(mic_words, system_words, n=ALIGN_NGRAM):
     return sorted((t, on_mic[k] - t) for k, t in unique_ngrams(system_words).items() if k in on_mic)
 
 
+def lag_at(lags, window=ALIGN_WINDOW):
+    """A function giving the mic's lag behind computer audio at a given time (median of the echo
+    matches nearby), or None without enough echo to tell (e.g. headphones)."""
+    if len(lags) < ALIGN_MIN_MATCHES:
+        return None
+    times = [t for t, _ in lags]
+
+    def lag(t):
+        lo, hi = bisect.bisect_left(times, t - window), bisect.bisect_right(times, t + window)
+        if lo == hi:  # no echo nearby: use the closest matches
+            i = bisect.bisect_left(times, t)
+            lo, hi = max(0, i - ALIGN_MIN_MATCHES), min(len(times), i + ALIGN_MIN_MATCHES)
+        return statistics.median(d for _, d in lags[lo:hi])
+    return lag
+
+
 def align_to_mic(system, lags, window=ALIGN_WINDOW):
     """Shifts computer-audio utterances onto the mic's timeline using the echo the mic picked
     up. Undoes drift between the tracks (e.g. the system audio tap skipping time), which would
     otherwise break echo removal and the order of turns. Without enough echo, returns `system`
     unchanged."""
-    if len(lags) < ALIGN_MIN_MATCHES:
+    lag = lag_at(lags, window)
+    if lag is None:
         return system
-    times = [t for t, _ in lags]
     out = []
     for u in system:
-        lo = bisect.bisect_left(times, u["start"] - window)
-        hi = bisect.bisect_right(times, u["start"] + window)
-        if lo == hi:  # no echo nearby: use the closest matches
-            i = bisect.bisect_left(times, u["start"])
-            lo, hi = max(0, i - ALIGN_MIN_MATCHES), min(len(times), i + ALIGN_MIN_MATCHES)
-        shift = statistics.median(lag for _, lag in lags[lo:hi])
-        out.append({**u, "start": u["start"] + shift, "end": u["end"] + shift})
+        shift = lag(u["start"])
+        out.append({**u, "start": u["start"] + shift, "end": u["end"] + shift,
+                    "words": [{**w, "start": w["start"] + shift, "end": w["end"] + shift}
+                              for w in u.get("words") or []]})
+    return out
+
+
+def strip_echo_words(mic, system, n=ECHO_RUN, window=ECHO_WORD_WINDOW):
+    """Cuts echo out of mic utterances word by word: runs of `n` or more words that computer
+    audio has at the same moment (the mic heard the speakers). Catches echo blended into your
+    own sentences, which whole-utterance matching (drop_echo) misses. Pieces of `ECHO_SCRAP`
+    words or fewer left between echoed runs are dropped too: they're the echo misheard.
+    Expects `system` aligned to the mic (align_to_mic)."""
+    on_system = {}
+    for u in system:
+        ws = u.get("words") or []
+        for i in range(len(ws) - n + 1):
+            on_system.setdefault(tuple(w["token"] for w in ws[i:i + n]), []).append(ws[i]["start"])
+
+    out = []
+    for u in mic:
+        ws = u.get("words")
+        if not ws:
+            out.append(u)
+            continue
+        echo = [False] * len(ws)
+        for i in range(len(ws) - n + 1):
+            times = on_system.get(tuple(w["token"] for w in ws[i:i + n]), ())
+            if any(abs(t - ws[i]["start"]) <= window for t in times):
+                echo[i:i + n] = [True] * n
+        if not any(echo):
+            out.append(u)
+            continue
+        pieces, i = [], 0
+        while i < len(ws):
+            if echo[i]:
+                i += 1
+                continue
+            j = i
+            while j < len(ws) and not echo[j]:
+                j += 1
+            between_echo = i > 0 and j < len(ws)
+            if not (between_echo and j - i <= ECHO_SCRAP):
+                pieces.append(ws[i:j])
+            i = j
+        for piece in pieces:
+            out.append({**u, "start": piece[0]["start"], "end": piece[-1]["end"],
+                        "text": " ".join(w["text"] for w in piece), "words": piece})
     return out
 
 
@@ -346,7 +411,8 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
     mic, system = by_track.get("mic", []), by_track.get("system", [])
     if online:
         system = align_to_mic(system, echo_lags(words_by_track.get("mic", []), words_by_track.get("system", [])))
-        mic = drop_echo(mic, system)
+        # Whole utterances that are mostly echo first, then echo blended into your own sentences.
+        mic = strip_echo_words(drop_echo(mic, system), system)
     notes = recording_notes(status, mic, system, online)
 
     utterances = merge_consecutive(label_speakers(mic + system, online))

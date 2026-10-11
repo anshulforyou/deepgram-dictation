@@ -37,7 +37,17 @@ class UtterancesTest(unittest.TestCase):
     def test_applies_offset_and_skips_empty(self):
         resp = deepgram_response((0, 1.0, 2.0, "Hello"), (1, 3.0, 4.0, "  "))
         out = mt.utterances_from_response(resp, "system", offset=0.5)
-        self.assertEqual(out, [utt("system", 0, 1.5, 2.5, "Hello")])
+        self.assertEqual(out, [{**utt("system", 0, 1.5, 2.5, "Hello"), "words": []}])
+
+    def test_keeps_word_timings(self):
+        resp = {"results": {"utterances": [{"speaker": 0, "start": 1.0, "end": 2.0, "transcript": "Hi, Sam.",
+                                            "words": [{"word": "hi", "punctuated_word": "Hi,", "start": 1.0,
+                                                       "end": 1.4},
+                                                      {"word": "sam", "punctuated_word": "Sam.", "start": 1.5,
+                                                       "end": 2.0}]}]}}
+        words = mt.utterances_from_response(resp, "mic", offset=0.5)[0]["words"]
+        self.assertEqual(words, [{"token": "hi", "text": "Hi,", "start": 1.5, "end": 1.9},
+                                 {"token": "sam", "text": "Sam.", "start": 2.0, "end": 2.5}])
 
     def test_handles_missing_results(self):
         self.assertEqual(mt.utterances_from_response({}, "mic"), [])
@@ -115,6 +125,58 @@ class AlignTest(unittest.TestCase):
         self.assertEqual(len(mt.drop_echo(mic, system)), 2, "12 s apart: echo not recognised")
         aligned = mt.align_to_mic(system, mt.echo_lags(mic_words, system_words))
         self.assertEqual([u["text"] for u in mt.drop_echo(mic, aligned)], ["my own words"])
+
+
+def worded(track, start, text, step=0.4):
+    """An utterance with word timings, one word every `step` seconds from `start`."""
+    words = [{"token": w.lower().strip(".,?!"), "text": w, "start": start + i * step, "end": start + i * step + 0.3}
+             for i, w in enumerate(text.split())]
+    return {"track": track, "speaker": 0, "start": start, "end": words[-1]["end"], "text": text, "words": words}
+
+
+class StripEchoWordsTest(unittest.TestCase):
+    REMOTE = worded("system", 10.0, "Whenever you plan to come just let me know and we will book it")
+
+    def texts(self, mic):
+        return [u["text"] for u in mt.strip_echo_words(mic, [self.REMOTE])]
+
+    def test_cuts_echo_out_of_my_sentence(self):
+        # I said "Sure, sounds good." and then the mic heard the remote speaker through the speakers.
+        mic = worded("mic", 8.4, "Sure, sounds good. Whenever you plan to come just let me know")
+        self.assertEqual(self.texts(mic and [mic]), ["Sure, sounds good."])
+
+    def test_keeps_my_words_after_echo(self):
+        mic = worded("mic", 12.0, "plan to come just let me know Great, I will check the slots tomorrow")
+        self.assertEqual(self.texts([mic]), ["Great, I will check the slots tomorrow"])
+
+    def test_drops_misheard_scraps_between_echo(self):
+        mic = worded("mic", 10.1, "Whenever you plan to come just lemme no and we will book it")
+        self.assertEqual(self.texts([mic]), [])
+
+    def test_keeps_same_words_said_at_another_time(self):
+        mic = worded("mic", 60.0, "just let me know and we will book it")
+        self.assertEqual(self.texts([mic]), ["just let me know and we will book it"])
+
+    def test_two_shared_words_are_not_echo(self):
+        mic = worded("mic", 10.5, "you plan a trip")
+        self.assertEqual(self.texts([mic]), ["you plan a trip"])
+
+    def test_piece_timings_follow_the_kept_words(self):
+        mic = worded("mic", 8.4, "Sure, sounds good. Whenever you plan to come just let me know")
+        out = mt.strip_echo_words([mic], [self.REMOTE])
+        self.assertEqual((out[0]["start"], len(out[0]["words"])), (8.4, 3))
+
+    def test_mostly_echo_utterances_go_whole_before_cutting(self):
+        # The order used by run(): misheard echo with a few edge words left over must not survive
+        # as fragments.
+        mic = [worded("mic", 9.6, "Then whenever you plan to come just let me know and we will book"),
+               worded("mic", 30.0, "Sure, sounds good to me")]
+        out = mt.strip_echo_words(mt.drop_echo(mic, [self.REMOTE]), [self.REMOTE])
+        self.assertEqual([u["text"] for u in out], ["Sure, sounds good to me"])
+
+    def test_utterances_without_word_timings_pass_through(self):
+        mic = utt("mic", 0, 10.0, 12.0, "Whenever you plan to come")
+        self.assertEqual(mt.strip_echo_words([mic], [self.REMOTE]), [mic])
 
 
 class RecordingNotesTest(unittest.TestCase):
