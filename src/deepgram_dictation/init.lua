@@ -18,6 +18,8 @@ local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
 local enabled = true
 local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTimer, slowTimer
 local standby -- { task, device, output }: a recorder with the mic set up but off, see prepareStandby
+local usedStandby -- whether the current dictation started from the standby recorder
+local holding = false -- the key is down for the current recording (it can't be cancelled after)
 local delivered = 0
 local indicator, menubar, apiKey
 
@@ -77,6 +79,7 @@ local function takeRecording(via, recording)
     -- Time from pressing the key to the first audio from the mic: speech before that is lost.
     micMs = micReadyAt and startedAt and math.floor((micReadyAt - startedAt) * 1000 + 0.5),
     tailSeconds = cfg.tailSeconds,
+    standby = usedStandby,
     device = inputDeviceName(),
   }
 end
@@ -89,7 +92,7 @@ local function deliver(raw, dict, via, moved)
   local names = cleanup.namesFor(dict)
   cleanup.run(raw, names, function(text, info)
     local pasted = core.applyReplacements(text, dict.replacements)
-    setIndicator(nil)
+    if not recorder then setIndicator(nil) end -- keep the badge of a dictation started meanwhile
     pasteText(pasted)
     record.cleanup = info
     record.cleaned = info.status == "ok" and text or nil
@@ -161,12 +164,19 @@ local function alertNoSpeech()
 end
 
 local function finishStreaming(stdout, dict)
+  local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
   if not sendOnExit then
     os.remove(audioPath)
     setIndicator(nil)
+    -- Discarded on purpose (a tap, or cancelled) prints nothing. An error means the recorder died
+    -- while the key was still held: say so rather than let the user keep talking to nothing.
+    if result.error then
+      holding = false
+      log("recorder stopped: %s", tostring(result.error))
+      hs.alert.show("Recording stopped, see Hammerspoon console", 3)
+    end
     return
   end
-  local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
   if type(result.transcript) == "string" then
     if result.transcript == "" then
       setIndicator(nil)
@@ -242,7 +252,8 @@ local function startStreaming()
   local proc = standby
   standby = nil
   -- A standby set up for another mic (AirPods connected since) would record the wrong one.
-  if proc and proc.task:isRunning() and proc.device == inputDeviceName() then
+  usedStandby = proc ~= nil and proc.task:isRunning() and proc.device == inputDeviceName()
+  if usedStandby then
     proc.task:setInput("start " .. url .. "\n")
   else
     if proc and proc.task:isRunning() then proc.task:terminate() end
@@ -259,7 +270,7 @@ end
 
 local function startRecording()
   os.remove(audioPath)
-  cancelled, sendOnExit, micReadyAt = false, false, nil
+  cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
   startedAt = hs.timer.secondsSinceEpoch()
   if cfg.streaming and hs.fs.attributes(recorderHelper()) then return startStreaming() end
   if not recBinary then
@@ -284,7 +295,10 @@ local function startRecording()
 end
 
 local function stopRecording()
-  if not recorder or tailTimer then return end
+  -- Only the press that started this recording can end it: a press while it is still finishing
+  -- (the tail, or waiting for Deepgram) must never discard it.
+  if not recorder or not holding then return end
+  holding = false
   releasedAt = hs.timer.secondsSinceEpoch()
   local duration = releasedAt - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
@@ -373,8 +387,11 @@ function M.start(overrides)
   end):start()
 
   -- Hotkey used as a modifier for another key (e.g. Fn+F5): cancel this dictation.
-  M.keyTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function()
-    if recorder then cancelled = true end
+  -- Keystrokes Hammerspoon posts itself (the ⌘V that pastes a previous dictation) don't count.
+  local ownPid = hs.processInfo.processID
+  local sourcePid = hs.eventtap.event.properties.eventSourceUnixProcessID
+  M.keyTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
+    if recorder and holding and e:getProperty(sourcePid) ~= ownPid then cancelled = true end
     return false
   end):start()
 

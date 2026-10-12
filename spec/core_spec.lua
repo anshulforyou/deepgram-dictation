@@ -115,11 +115,11 @@ describe("normalizeDictionary", function()
   it("drops malformed entries", function()
     local dict = core.normalizeDictionary({
       keyterms = { "Good", "", "   ", 42 },
-      names = { "Anant", 7, "" },
+      names = { "Priya", 7, "" },
       replacements = { { from = "btw", to = "by the way" }, { from = "" , to = "x" }, { from = "a" }, "bad" },
     })
     assert.are.same({ "Good" }, dict.keyterms)
-    assert.are.same({ "Anant" }, dict.names)
+    assert.are.same({ "Priya" }, dict.names)
     assert.are.same({ { from = "btw", to = "by the way" } }, dict.replacements)
   end)
 
@@ -499,21 +499,21 @@ end)
 
 describe("mergeNames", function()
   it("puts dictionary names first and drops case-insensitive duplicates", function()
-    local names = core.mergeNames({ names = { "Anant", " moksh " } },
-      { names = { "Moksh", "Anshul", "anant", "Slack" } }, 10)
-    assert.are.same({ "Anant", "moksh", "Anshul", "Slack" }, names)
+    local names = core.mergeNames({ names = { "Priya", " sam " } },
+      { names = { "Sam", "Alex", "priya", "Slack" } }, 10)
+    assert.are.same({ "Priya", "sam", "Alex", "Slack" }, names)
   end)
 
   it("builds keyterms from dictionary keyterms and names plus the top extracted keyterms", function()
-    local _, keyterms = core.mergeNames({ keyterms = { "Deepgram" }, names = { "Anant" } },
-      { names = { "Anshul", "Moksh", "Arihant", "Slack" }, keyterms = { "Anshul", "Moksh", "Arihant" } }, 2)
-    assert.are.same({ "Deepgram", "Anant", "Anshul", "Moksh" }, keyterms)
+    local _, keyterms = core.mergeNames({ keyterms = { "Deepgram" }, names = { "Priya" } },
+      { names = { "Alex", "Sam", "Jordan", "Slack" }, keyterms = { "Alex", "Sam", "Jordan" } }, 2)
+    assert.are.same({ "Deepgram", "Priya", "Alex", "Sam" }, keyterms)
   end)
 
   it("never adds a keyterm twice", function()
-    local _, keyterms = core.mergeNames({ keyterms = { "Anant" }, names = { "anant" } },
-      { keyterms = { "ANANT", "Moksh" } }, 5)
-    assert.are.same({ "Anant", "Moksh" }, keyterms)
+    local _, keyterms = core.mergeNames({ keyterms = { "Priya" }, names = { "priya" } },
+      { keyterms = { "PRIYA", "Sam" } }, 5)
+    assert.are.same({ "Priya", "Sam" }, keyterms)
   end)
 
   it("works without extracted names", function()
@@ -525,8 +525,8 @@ end)
 
 describe("cleanupSystemPrompt", function()
   it("appends the names list", function()
-    assert.are.equal("Do it.\n\nNames list:\nAnant, Moksh\n",
-      core.cleanupSystemPrompt("Do it.\n\n", { "Anant", "Moksh" }))
+    assert.are.equal("Do it.\n\nNames list:\nPriya, Sam\n",
+      core.cleanupSystemPrompt("Do it.\n\n", { "Priya", "Sam" }))
   end)
 
   it("leaves the instructions alone without names", function()
@@ -578,6 +578,31 @@ describe("parseCleanup", function()
     local text, why = core.parseCleanup(resp("Ship Wednesday."), raw)
     assert.is_nil(text)
     assert.matches("shrank", why)
+  end)
+
+  it("rejects an answer that removed or softened swearing", function()
+    local said = "First of all, why the fuck are we showing the run button on this screen?"
+    local text, why = core.parseCleanup(resp("First of all, why are we showing the run button on this screen?"), said)
+    assert.is_nil(text)
+    assert.are.equal("removed swearing", why)
+    assert.are.equal(said, core.parseCleanup(resp(said), said))
+  end)
+
+  it("rejects a same-length answer made of words never said", function()
+    local said = "what is the best way to structure a service in Go"
+    local text, why = core.parseCleanup(resp("Use small packages, clear interfaces and one main entry point."), said)
+    assert.is_nil(text)
+    assert.matches("never said", why)
+  end)
+
+  it("allows a few fixed words", function()
+    assert.are.equal("we go live on Monday", core.parseCleanup(resp("we go live on Monday"), "we go life on Monday"))
+    assert.are.equal("go live", core.parseCleanup(resp("go live"), "go life"))
+  end)
+
+  it("counts swear words as whole words", function()
+    assert.are.equal(3, core.swearCount("What the Fuck, this is bullshit. Hell."))
+    assert.are.equal(0, core.swearCount("Hello shell, the class passed and Shelly assessed it."))
   end)
 
   it("allows big relative cuts on short dictations", function()

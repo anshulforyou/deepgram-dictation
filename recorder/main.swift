@@ -491,7 +491,8 @@ func printMicUsers() {
 ///
 /// With --standby the mic is set up but left off, {"event": "ready"} is printed, and recording
 /// starts when a "start <wss://...>" line arrives on stdin. Starting the mic is then about 250 ms
-/// faster, and seconds faster when the Mac has been idle. Exits if stdin closes first.
+/// faster, and seconds faster when the Mac has been idle. In both modes, when stdin is a pipe the
+/// recorder exits as soon as it closes (Hammerspoon went away).
 ///
 /// Prints {"event": "listening"} once the mic delivers real audio (Bluetooth mics such as AirPods
 /// are silent for a second or two while they switch on).
@@ -536,21 +537,28 @@ final class StreamSession {
         }
         if standby {
             emit(["event": "ready"])
-            waitForStartCommand()
         } else if let url {
             begin(url)
         }
+        watchStdin()
     }
 
-    private func waitForStartCommand() {
+    /// Reads Hammerspoon's commands on stdin (a standby's "start <url>"), and exits when stdin
+    /// closes: Hammerspoon quit or crashed, so nobody is left to stop the recording and the mic
+    /// would stay on. Only when stdin is a pipe, so running by hand from a terminal still works.
+    private func watchStdin() {
+        var info = stat()
+        guard fstat(STDIN_FILENO, &info) == 0, (info.st_mode & S_IFMT) == S_IFIFO else { return }
+        let standby = self.standby
         Thread.detachNewThread { [weak self] in
+            var started = !standby
             while let line = readLine() {
-                if let url = StandbyCommand.url(from: line) {
+                if !started, let url = StandbyCommand.url(from: line) {
+                    started = true
                     DispatchQueue.main.async { self?.begin(url) }
-                    return
                 }
             }
-            exit(0) // stdin closed: Hammerspoon quit or replaced this standby
+            exit(0)
         }
     }
 

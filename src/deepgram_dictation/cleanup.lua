@@ -13,8 +13,9 @@ local API_URL = "https://api.anthropic.com/v1/messages"
 local MODULE_DIR = hs.configdir .. "/deepgram_dictation"
 local NAMES_PATH = core.supportDir() .. "/names.json"
 local NAMES_MAX_AGE = 24 * 60 * 60
+local NAMES_RETRY_AFTER = 60 * 60 -- after a failed extraction, don't try again on every dictation
 
-local cfg, instructions, apiKey, extractor
+local cfg, instructions, apiKey, extractor, lastAttempt
 local extracted, extractedMtime = {}, nil -- { names = {...}, keyterms = {...} }
 
 local function log(fmt, ...) print("[deepgram-dictation] cleanup: " .. string.format(fmt, ...)) end
@@ -47,6 +48,8 @@ local function refreshNames()
   if not cfg.grandmaHome or extractor then return end
   local attrs = hs.fs.attributes(NAMES_PATH)
   if attrs and os.time() - attrs.modification < NAMES_MAX_AGE then return end
+  if lastAttempt and os.time() - lastAttempt < NAMES_RETRY_AFTER then return end
+  lastAttempt = os.time()
   local python = cfg.python or core.findExecutable(function(p) return hs.fs.attributes(p) ~= nil end,
     core.PYTHON_CANDIDATES)
   if not python then return end

@@ -271,6 +271,20 @@ function core.cleanupRequest(cfg, systemPrompt, text)
   }
 end
 
+-- Swear words, as Lua patterns matched against lowercased whole words.
+core.SWEARS = { "^fuck", "^shit", "^bullshit", "^damn", "^hell$", "^bitch", "^crap", "^bloody$", "^ass$", "^asshole" }
+
+-- How many swear words `text` contains.
+function core.swearCount(text)
+  local n = 0
+  for word in tostring(text):lower():gmatch("%a+") do
+    for _, pattern in ipairs(core.SWEARS) do
+      if word:match(pattern) then n = n + 1 break end
+    end
+  end
+  return n
+end
+
 function core.wordCount(text)
   local n = 0
   for _ in tostring(text):gmatch("%S+") do n = n + 1 end
@@ -297,6 +311,15 @@ function core.parseCleanup(resp, raw)
   if before >= 6 and after < before * 0.4 then
     return nil, string.format("answer shrank from %d to %d words", before, after)
   end
+  -- Cleanup swaps the odd misheard word; an answer is made of words the speaker never said.
+  local said = {}
+  for w in raw:lower():gmatch("[%w']+") do said[w] = true end
+  local new = 0
+  for w in text:lower():gmatch("[%w']+") do if not said[w] then new = new + 1 end end
+  if new > 2 + after * 0.3 then return nil, string.format("%d of %d words were never said", new, after) end
+  -- Swearing is how the speaker talks, never something to clean up. Repeats ("fuck fuck") are
+  -- rare enough that losing those fixes is the right trade for a guarantee.
+  if core.swearCount(text) < core.swearCount(raw) then return nil, "removed swearing" end
   return text
 end
 

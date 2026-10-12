@@ -16,8 +16,8 @@ def make_home(root):
     """A grandma home with two sweaters, global, and everything the extractor must never read."""
     home = root / "grandma"
     (home / "acme").mkdir(parents=True)
-    (home / "acme" / "facts.md").write_text(FACTS.format(name="acme", body="Anant runs Acme. Anant met Moksh."))
-    (home / "acme" / "people.md").write_text("- Moksh, Go engineer\n")
+    (home / "acme" / "facts.md").write_text(FACTS.format(name="acme", body="Priya runs Acme. Priya met Sam."))
+    (home / "acme" / "people.md").write_text("- Sam, Go engineer\n")
     (home / "acme" / "meetings").mkdir()
     (home / "acme" / "meetings" / "call.md").write_text("Zed from the call")
     (home / "acme" / "log").mkdir()
@@ -28,7 +28,7 @@ def make_home(root):
     (home / "home-ops").mkdir()
     (home / "home-ops" / "facts.md").write_text(FACTS.format(name="home-ops", body="Plumber is Ravi."))
     (home / "global").mkdir()
-    (home / "global" / "identity.md").write_text("---\nscope: global\n---\nName: Anshul.\n")
+    (home / "global" / "identity.md").write_text("---\nscope: global\n---\nName: Alex.\n")
     (home / "secrets").mkdir()
     (home / "secrets" / "personal.md").write_text("---\nscope: secrets\n---\nDOB and passwords")
     (home / "proposals").mkdir()
@@ -36,6 +36,7 @@ def make_home(root):
     (home / "notes").mkdir()
     (home / "notes" / "random.md").write_text("Not a sweater, no scope")
     (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test")
+    (home / "acme" / "linked.md").symlink_to(home / "secrets" / "personal.md")
     return home
 
 
@@ -61,20 +62,20 @@ class MemoryFilesTest(unittest.TestCase):
     def test_notes_are_tagged_with_their_path(self):
         notes = nfg.build_notes(self.home, nfg.memory_files(self.home))
         self.assertIn('<file path="acme/facts.md">', notes)
-        self.assertIn("Anant runs Acme.", notes)
+        self.assertIn("Priya runs Acme.", notes)
 
 
 class RankTest(unittest.TestCase):
     def test_most_mentioned_first_and_drops_names_not_in_notes(self):
-        notes = "Anant and Moksh. Anant again. Ravi once. Anantha is someone else."
-        self.assertEqual(nfg.rank(["Ravi", "Moksh", "Anant", "Invented"], notes), ["Anant", "Moksh", "Ravi"])
+        notes = "Priya and Sam. Priya and Sam again. Priya. Ravi once. Priyaha is someone else."
+        self.assertEqual(nfg.rank(["Ravi", "Sam", "Priya", "Invented"], notes), ["Priya", "Sam", "Ravi"])
 
     def test_dedupes_case_insensitively(self):
-        self.assertEqual(nfg.rank(["Moksh", "moksh", " Moksh "], "Moksh"), ["Moksh"])
+        self.assertEqual(nfg.rank(["Sam", "sam", " Sam "], "Sam"), ["Sam"])
 
     def test_keyterms_leave_out_common_single_words(self):
-        self.assertEqual(nfg.keyterms(["Anant", "Go", "Slack", "Claude Code"], {"go", "slack", "claude"}),
-                         ["Anant", "Claude Code"])
+        self.assertEqual(nfg.keyterms(["Priya", "Go", "Slack", "Claude Code"], {"go", "slack", "claude"}),
+                         ["Priya", "Claude Code"])
 
 
 class MainTest(unittest.TestCase):
@@ -95,12 +96,12 @@ class MainTest(unittest.TestCase):
             return nfg.main(argv)
 
     def test_writes_ranked_names_and_keyterms(self):
-        with mock.patch.object(nfg, "ask_claude", return_value=["Moksh", "Go", "Anant", "Ravi"]) as ask:
+        with mock.patch.object(nfg, "ask_claude", return_value=["Sam", "Go", "Priya", "Ravi"]) as ask:
             self.assertEqual(self.run_main(), 0)
         self.assertNotIn("passwords", ask.call_args[0][0])
         data = json.loads(self.out.read_text())
-        self.assertEqual(data["names"], ["Anant", "Moksh", "Go", "Ravi"])
-        self.assertEqual(data["keyterms"], ["Anant", "Moksh", "Ravi"])
+        self.assertEqual(data["names"], ["Priya", "Sam", "Go", "Ravi"])
+        self.assertEqual(data["keyterms"], ["Priya", "Sam", "Ravi"])
         self.assertIn("generated", data)
 
     def test_failure_keeps_the_previous_file(self):
@@ -119,9 +120,9 @@ class AskClaudeTest(unittest.TestCase):
         return resp
 
     def test_parses_structured_output(self):
-        payload = {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"names": ["Anant", 3]}'}]}
+        payload = {"stop_reason": "end_turn", "content": [{"type": "text", "text": '{"names": ["Priya", 3]}'}]}
         with mock.patch("urllib.request.urlopen", return_value=self.reply(payload)) as urlopen:
-            self.assertEqual(nfg.ask_claude("notes", "k", "claude-haiku-5-5"), ["Anant"])
+            self.assertEqual(nfg.ask_claude("notes", "k", "claude-haiku-5-5"), ["Priya"])
         body = json.loads(urlopen.call_args[0][0].data)
         self.assertEqual(body["output_config"]["format"]["type"], "json_schema")
 

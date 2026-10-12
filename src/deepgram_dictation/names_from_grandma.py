@@ -61,7 +61,8 @@ def memory_files(home):
         if not d.is_dir() or d.name.lower() in NEVER_READ_DIRS:
             continue
         for f in sorted(d.glob("*.md")):
-            if f.is_file() and not f.name.startswith(".") and not SECRET_FILE.search(f.name):
+            if f.is_file() and not f.is_symlink() and not f.name.startswith(".") \
+                    and not SECRET_FILE.search(f.name):
                 files.append(f)
     return files
 
