@@ -121,6 +121,18 @@ test("stream is complete only when results cover all audio") {
     expect(StreamCompletion.isComplete(transcribedUntil: 4.70, audioSeconds: 4.79), "within tolerance")
 }
 
+// MARK: StandbyCommand
+
+test("standby start command carries the stream URL") {
+    let url = StandbyCommand.url(from: "start wss://api.deepgram.com/v1/listen?model=nova-3&keyterm=Priya\n")
+    expect(url?.host == "api.deepgram.com", "parses the URL")
+    expect(url?.query?.contains("keyterm=Priya") == true, "keeps the query")
+    expect(StandbyCommand.url(from: "stop wss://api.deepgram.com/v1/listen") == nil, "other verbs")
+    expect(StandbyCommand.url(from: "start") == nil, "no URL")
+    expect(StandbyCommand.url(from: "start https://example.com") == nil, "not a websocket URL")
+    expect(StandbyCommand.url(from: "") == nil, "empty line")
+}
+
 // MARK: WAV / PCM
 
 test("WAV header describes 16 kHz mono 16-bit PCM") {

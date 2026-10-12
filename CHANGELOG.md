@@ -11,6 +11,25 @@ All notable changes to this project are documented here. The format follows
 - Filing into [grandma](https://github.com/anshulforyou/grandma): with `grandmaHome`, meetings go
   to the matching sweater's `meetings/` folder with an index and an INDEX.md pointer, and each one
   gets a memory proposal for `grandma review`.
+- Dictation cleanup with Claude (`cleanup`): removes repeated words and false starts, applies
+  spoken self-corrections, and fixes misheard words and names before pasting. Falls back to the
+  raw transcript when Claude is slow or answers with something that isn't a cleanup.
+- `names` in the dictionary, and names read from grandma memory once a day: spelled correctly by
+  cleanup and listened for by Deepgram.
+- `keepDictations`: keeps recent dictations to review, flag from the menu, and replay with
+  `make eval-dictation`. **Retry last dictation** transcribes the newest one again.
+- A standby recorder with the mic set up but off: recording starts about 0.2 s after the key
+  goes down instead of 0.4 s, or up to 2 s after the Mac has been idle, so first words aren't lost.
+- `tailSeconds`: recording continues 0.5 s after release, so the last word isn't cut off.
+
+### Changed
+
+- The badge says Listening as soon as the key is down (no more "Connecting mic").
+- The dictation stays on the clipboard after pasting (`restoreClipboard` now defaults to `false`),
+  so ⌘V still has it when focus moved while you spoke.
+- A stream that falls behind on a slow connection no longer pastes a partial transcript: the whole
+  recording is uploaded instead, with a "Slow connection" badge. If Deepgram can't be reached, the
+  recording is kept for a retry.
 
 ## [0.2.0] - 2026-10-11
 

@@ -2,7 +2,7 @@ LUAROCKS_BIN ?= $(HOME)/.luarocks/bin
 BUSTED   ?= $(shell command -v busted 2>/dev/null || echo $(LUAROCKS_BIN)/busted)
 LUACHECK ?= $(shell command -v luacheck 2>/dev/null || echo $(LUAROCKS_BIN)/luacheck)
 
-.PHONY: test test-lua test-python test-swift test-install test-integration lint install uninstall
+.PHONY: test test-lua test-python test-swift test-install test-integration eval-dictation lint install uninstall
 
 test: test-lua test-python test-swift test-install
 
@@ -22,6 +22,10 @@ test-install:
 test-integration:
 	tests/integration/mic_coexistence.sh
 	SYSTEM_AUDIO=0 tests/integration/mic_coexistence.sh
+
+# Replays recent saved dictations through the current cleanup prompt (calls Anthropic's API).
+eval-dictation:
+	python3 scripts/replay_dictations.py --last 20
 
 lint:
 	$(LUACHECK) src spec

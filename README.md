@@ -14,17 +14,24 @@ app, and no account other than your Deepgram one.
 ## Features
 
 - **Hold-to-talk:** hold **Fn** (or a right-side modifier key), speak, release.
-- **Fast:** audio streams to Deepgram while you speak, so text appears about half a second after
-  you let go.
+- **Fast:** a recorder waits in standby with the mic set up (but off), so recording starts about
+  0.2 s after you press, and audio streams to Deepgram while you speak, so text appears about half
+  a second after you let go.
+- **Never loses what you said:** on a slow connection the full recording is uploaded instead of
+  pasting a partial line, and if Deepgram can't be reached the recording is kept so you can retry
+  it from the menu.
 - **Meeting transcription:** records in-person meetings from the mic, or online meetings
   (Zoom, Google Meet, Teams, Slack…) from the mic *and* computer audio, then gives you a
   speaker-labelled transcript on your clipboard, ready to paste into Notion, Google Docs or
   anywhere else. No bot joins your call.
 - **Meeting detection:** when a call starts, a small prompt asks whether to transcribe it. The
   recording stops on its own when the call ends.
+- **Cleaned up by Claude (optional):** like Wispr Flow, dictation loses repeated words and
+  false starts, keeps only the corrected version when you correct yourself ("Tuesday, no,
+  Wednesday"), and gets misheard words and names fixed before it's pasted.
 - **Organized by Claude (optional):** each transcript gets a title, summary and action items,
   and is filed into a topic folder with a `meetings.md` index.
-- **Pastes into any app:** your clipboard is restored afterwards.
+- **Pastes into any app**, and the text stays on your clipboard, so if focus moved while you spoke, ⌘V still has it.
 - **Deepgram Nova-3** with punctuation and smart formatting (numbers, emails, dates).
 - **Custom vocabulary:** names and jargon are sent as Deepgram
   [keyterms](https://developers.deepgram.com/docs/keyterm) so they're spelled correctly.
@@ -83,6 +90,50 @@ Re-running `./install.sh` upgrades the module and leaves your settings, dictiona
 | Tap for less than 0.3 s | Ignored, so accidental taps don't trigger anything |
 | Press another key while holding (e.g. Fn+F5) | Dictation is cancelled |
 | 🎙 menu bar icon, or **⌃⌥⌘D** | Enable/disable dictation, start/stop meetings, reload config |
+
+## Cleaning up dictation with Claude
+
+Deepgram writes down exactly what it heard, stumbles included. With `cleanup` on, each
+dictation goes through Claude (Haiku, through the Anthropic API) before it's pasted:
+
+| You say | Deepgram hears | Pasted |
+| --- | --- | --- |
+| "I I think the the app is ready" | I I think the the app is ready | I think the app is ready |
+| "So I was going to, I think we should ship it" | (same) | I think we should ship it |
+| "on Tuesday, no, Wednesday" | (same) | on Wednesday |
+| "we go live on Monday" | we go life on Monday | we go live on Monday |
+
+It never rephrases, and it never answers what you dictate: "what is the capital of France"
+is pasted as that question. If Claude takes longer than `cleanupTimeout` (2.5 s), errors, or
+replies with something that isn't a cleanup, the raw transcript is pasted instead. Cleanup adds
+about a second before the paste.
+
+It needs an [Anthropic API key](https://console.anthropic.com/settings/keys) in the Keychain:
+
+```sh
+security add-generic-password -s anthropic-api-key -a "$USER" -w
+```
+
+```lua
+deepgramDictation.start({
+  cleanup = true,
+  keepDictations = 200, -- optional: keep recent dictations to review and replay
+})
+```
+
+**Names.** Add the names you say to `names` in your [dictionary](#dictionary). They are spelled
+exactly like that, and Deepgram listens for them. With `grandmaHome` set, names are also read
+from your [grandma](https://github.com/anshulforyou/grandma) memory about once a day: only the
+memory files at the root of each sweater and in `global/`, never meetings, logs, proposals,
+`secrets/` or anything that looks like a credential. Every name goes to Claude. The
+`keytermNames` most mentioned ones that aren't everyday words also go to Deepgram.
+
+**Reviewing.** With `keepDictations`, the last N dictations are saved in
+`~/Library/Application Support/deepgram-dictation/dictations/`: the audio, what Deepgram heard,
+what was pasted, and how long each step took. When a dictation comes out wrong, pick **Flag last
+dictation as wrong** in the 🎙 menu. `make eval-dictation` replays recent dictations through the
+current prompt ([`cleanup_prompt.txt`](src/deepgram_dictation/cleanup_prompt.txt)), and
+`python3 scripts/replay_dictations.py --flagged --deepgram` re-transcribes the flagged ones too.
 
 ## Meeting transcription
 
@@ -226,7 +277,8 @@ deepgramDictation.start({
 | `smartFormat` | `true` | Format numbers, dates, emails, etc. |
 | `streaming` | `true` | Stream audio while you speak. `false` uploads the recording after you release (slower) |
 | `minSeconds` | `0.3` | Shorter presses are ignored |
-| `restoreClipboard` | `true` | Put your previous clipboard back after pasting |
+| `tailSeconds` | `0.5` | Keep recording this long after you release, so the last word isn't cut off |
+| `restoreClipboard` | `false` | Put your previous clipboard back after pasting. Off by default so the dictation stays on the clipboard: if the paste missed (focus moved while you spoke), ⌘V still has it |
 | `showMenubar` | `true` | Show the 🎙 menu bar item |
 | `dictionary` | `~/.hammerspoon/deepgram-dictionary.json` | Path to your dictionary |
 | `recBinary` | auto-detected | Path to sox's `rec` |
@@ -236,8 +288,14 @@ deepgramDictation.start({
 | `detectMeetings` | `true` | Offer to transcribe when a call starts |
 | `autoStopMeetings` | `true` | Stop and transcribe when a detected call ends |
 | `menuHotkey` | `{ mods = {"ctrl","alt","cmd"}, key = "d" }` | Shows the menu at the mouse pointer. `false` disables it |
+| `cleanup` | `false` | Clean up dictation with Claude before pasting (needs an Anthropic API key) |
+| `cleanupModel` | `"claude-haiku-5-5"` | Claude model for cleanup |
+| `cleanupTimeout` | `2.5` | Seconds to wait for cleanup before pasting the raw transcript |
+| `anthropicKeychainName` | `"anthropic-api-key"` | Keychain service name holding the Anthropic API key |
+| `keytermNames` | `50` | How many names from grandma memory Deepgram listens for |
+| `keepDictations` | `0` | Keep the last N dictations (audio and text) for review and replay |
 | `organizeWithClaude` | `false` | File transcripts into topic folders with Claude |
-| `grandmaHome` | `nil` | grandma memory home (e.g. `"~/.grandma"`): file into sweaters and draft memory proposals |
+| `grandmaHome` | `nil` | grandma memory home (e.g. `"~/.grandma"`): file meetings into sweaters, draft memory proposals, and read names for cleanup |
 | `claudePath` | auto-detected | Path to the `claude` CLI |
 | `claudeModel` | CLI default | Model for organizing, e.g. `"opus"` |
 | `meetingLanguage` | same as `language` | Language for meeting transcripts |
@@ -257,7 +315,8 @@ immediately:
 
 ```json
 {
-  "keyterms": ["Hammerspoon", "Kubernetes", "Jane Doe"],
+  "keyterms": ["Hammerspoon", "Kubernetes"],
+  "names": ["Jane Doe", "Priya"],
   "replacements": [
     { "from": "btw", "to": "by the way" },
     { "from": "my email address", "to": "you@example.com" }
@@ -267,7 +326,9 @@ immediately:
 
 - **`keyterms`**: words Deepgram should listen for and spell exactly like this. Used for both
   dictation and meetings.
-- **`replacements`**: applied to the transcript after Deepgram returns it. Matching is
+- **`names`**: people, companies and products you say. Deepgram listens for them, and with
+  `cleanup` on Claude spells them exactly like this when it hears something close. Dictation only.
+- **`replacements`**: applied to the transcript after Deepgram (and cleanup) returns it. Matching is
   case-insensitive and whole-word only (`btw` won't touch `debtwise`). Longer phrases win
   over shorter ones. Dictation only: they aren't applied to meeting transcripts.
 
@@ -311,7 +372,9 @@ Open the Hammerspoon console (menu bar icon → Console). Lines from this tool s
 | "Deepgram API key not found" | Add the key (see [Updating your API key](#updating-your-api-key)) |
 | "Deepgram error (401)" | The key is invalid or revoked. Replace it |
 | "No speech detected" | Check the input device in System Settings → Sound, and that Hammerspoon has microphone access. The alert says when the mic level was very low |
-| First word missing with AirPods | Bluetooth mics take 1-2 s to switch on. Wait for **🎙 Listening…** (it shows **🎧 Connecting mic…** until then) |
+| First word missing | The mic takes a moment to switch on after you press the key: about 0.2 s, but 1-2 s for Bluetooth mics such as AirPods. Each saved dictation records this as `micMs` |
+| "⏳ Slow connection…" | Your upload speed can't keep up with live audio. The whole recording is uploaded instead, so the text arrives late but complete |
+| "Couldn't reach Deepgram" | The recording is saved: 🎙 menu → **Retry last dictation** (needs `keepDictations`) |
 | Text is pasted twice | Another dictation app (Wispr Flow, Superwhisper…) is also listening on Fn. Quit it |
 | "sox not found" | `brew install sox` |
 | Meeting transcript only has your voice | Allow DeepgramRecorder under System Settings → Privacy & Security → **System Audio Recording Only**, then start a new recording |
@@ -330,7 +393,10 @@ Dictation audio is recorded to a temporary file, sent over HTTPS directly to Dee
 (unless you set `keepMeetingAudio`). Transcripts stay on your Mac. Nothing goes to any server
 other than Deepgram, unless you turn on `organizeWithClaude`, which sends the transcript text
 (not audio) to Anthropic through your Claude Code login. With `grandmaHome`, the matching
-sweater's memory files are sent along with it to draft the memory proposal.
+sweater's memory files are sent along with it to draft the memory proposal. `cleanup` sends each
+dictation's text (not audio) and your names list to Anthropic's API, and with `grandmaHome` the
+root memory files of your sweaters are sent once a day to extract those names. `keepDictations`
+keeps recent dictation audio and text in `~/Library/Application Support/deepgram-dictation/`.
 See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they handle audio.
 
 ## How it works
@@ -338,14 +404,19 @@ See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they h
 ```
 Hold key ──► DeepgramRecorder --stream (AVAudioEngine) ──► wss://api.deepgram.com/v1/listen
              (16 kHz PCM, also saved to a temp WAV)          (nova-3, keyterms; transcribes live)
-Release  ──► flush the last results (~0.5 s) ──► apply replacements ──► clipboard + ⌘V
-             if streaming fails: upload the saved WAV to /v1/listen instead
+Release  ──► record 0.5 s more, flush the last results ──► Claude cleanup (optional) ──► apply replacements ──► ⌘V
+             if streaming fails or falls behind: upload the saved WAV to /v1/listen instead
+Idle     ──► one DeepgramRecorder --stream --standby waits with the mic set up but off, so a
+             press only has to switch the mic on (~0.2 s instead of ~0.4 s, or ~2 s after idle)
 ```
 
 - [`src/deepgram_dictation/core.lua`](src/deepgram_dictation/core.lua): pure logic (config, URL
   building, replacements, response parsing). Has no Hammerspoon dependency and is fully unit tested.
 - [`src/deepgram_dictation/init.lua`](src/deepgram_dictation/init.lua): Hammerspoon glue
   (event taps, recording, HTTP, pasting, menu bar).
+- [`src/deepgram_dictation/cleanup.lua`](src/deepgram_dictation/cleanup.lua) and
+  [`names_from_grandma.py`](src/deepgram_dictation/names_from_grandma.py): cleanup with Claude and
+  the names it spells correctly. [`history.lua`](src/deepgram_dictation/history.lua): saved dictations.
 - [`src/deepgram_dictation/meeting.lua`](src/deepgram_dictation/meeting.lua): meeting start/stop,
   progress, notifications.
 - [`src/deepgram_dictation/detector.lua`](src/deepgram_dictation/detector.lua) and

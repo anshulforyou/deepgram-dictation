@@ -10,7 +10,7 @@ local indicator = require("deepgram_dictation.meeting_indicator")
 
 local M = {}
 
-local SUPPORT_DIR = os.getenv("HOME") .. "/Library/Application Support/deepgram-dictation"
+local SUPPORT_DIR = core.supportDir()
 local SESSIONS_DIR = SUPPORT_DIR .. "/meetings"
 local SCRIPT = hs.configdir .. "/deepgram_dictation/meeting_transcribe.py"
 
