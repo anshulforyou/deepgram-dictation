@@ -14,7 +14,8 @@ core.DEFAULTS = {
   recBinary    = nil,         -- path to sox's `rec`; auto-detected when nil
   dictionary   = nil,         -- path to dictionary JSON; defaults to <hs.configdir>/deepgram-dictionary.json
   keychainName = "deepgram-api-key",
-  restoreClipboard = true,
+  restoreClipboard = false,   -- true puts your previous clipboard back after pasting (the dictation is then
+                              -- lost if the paste missed, e.g. focus moved while you spoke)
   showMenubar  = true,
 
   -- Meeting transcription

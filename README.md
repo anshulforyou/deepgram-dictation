@@ -14,8 +14,12 @@ app, and no account other than your Deepgram one.
 ## Features
 
 - **Hold-to-talk:** hold **Fn** (or a right-side modifier key), speak, release.
-- **Fast:** audio streams to Deepgram while you speak, so text appears about half a second after
-  you let go.
+- **Fast:** a recorder waits in standby with the mic set up (but off), so recording starts about
+  0.2 s after you press, and audio streams to Deepgram while you speak, so text appears about half
+  a second after you let go.
+- **Never loses what you said:** on a slow connection the full recording is uploaded instead of
+  pasting a partial line, and if Deepgram can't be reached the recording is kept so you can retry
+  it from the menu.
 - **Meeting transcription:** records in-person meetings from the mic, or online meetings
   (Zoom, Google Meet, Teams, Slack…) from the mic *and* computer audio, then gives you a
   speaker-labelled transcript on your clipboard, ready to paste into Notion, Google Docs or
@@ -27,7 +31,7 @@ app, and no account other than your Deepgram one.
   Wednesday"), and gets misheard words and names fixed before it's pasted.
 - **Organized by Claude (optional):** each transcript gets a title, summary and action items,
   and is filed into a topic folder with a `meetings.md` index.
-- **Pastes into any app:** your clipboard is restored afterwards.
+- **Pastes into any app**, and the text stays on your clipboard, so if focus moved while you spoke, ⌘V still has it.
 - **Deepgram Nova-3** with punctuation and smart formatting (numbers, emails, dates).
 - **Custom vocabulary:** names and jargon are sent as Deepgram
   [keyterms](https://developers.deepgram.com/docs/keyterm) so they're spelled correctly.
@@ -274,7 +278,7 @@ deepgramDictation.start({
 | `streaming` | `true` | Stream audio while you speak. `false` uploads the recording after you release (slower) |
 | `minSeconds` | `0.3` | Shorter presses are ignored |
 | `tailSeconds` | `0.5` | Keep recording this long after you release, so the last word isn't cut off |
-| `restoreClipboard` | `true` | Put your previous clipboard back after pasting |
+| `restoreClipboard` | `false` | Put your previous clipboard back after pasting. Off by default so the dictation stays on the clipboard: if the paste missed (focus moved while you spoke), ⌘V still has it |
 | `showMenubar` | `true` | Show the 🎙 menu bar item |
 | `dictionary` | `~/.hammerspoon/deepgram-dictionary.json` | Path to your dictionary |
 | `recBinary` | auto-detected | Path to sox's `rec` |
@@ -368,7 +372,9 @@ Open the Hammerspoon console (menu bar icon → Console). Lines from this tool s
 | "Deepgram API key not found" | Add the key (see [Updating your API key](#updating-your-api-key)) |
 | "Deepgram error (401)" | The key is invalid or revoked. Replace it |
 | "No speech detected" | Check the input device in System Settings → Sound, and that Hammerspoon has microphone access. The alert says when the mic level was very low |
-| First word missing | The mic takes a moment to switch on after you press the key (1-2 s for Bluetooth mics such as AirPods). Each saved dictation records this as `micMs` |
+| First word missing | The mic takes a moment to switch on after you press the key: about 0.2 s, but 1-2 s for Bluetooth mics such as AirPods. Each saved dictation records this as `micMs` |
+| "⏳ Slow connection…" | Your upload speed can't keep up with live audio. The whole recording is uploaded instead, so the text arrives late but complete |
+| "Couldn't reach Deepgram" | The recording is saved: 🎙 menu → **Retry last dictation** (needs `keepDictations`) |
 | Text is pasted twice | Another dictation app (Wispr Flow, Superwhisper…) is also listening on Fn. Quit it |
 | "sox not found" | `brew install sox` |
 | Meeting transcript only has your voice | Allow DeepgramRecorder under System Settings → Privacy & Security → **System Audio Recording Only**, then start a new recording |
@@ -398,8 +404,10 @@ See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they h
 ```
 Hold key ──► DeepgramRecorder --stream (AVAudioEngine) ──► wss://api.deepgram.com/v1/listen
              (16 kHz PCM, also saved to a temp WAV)          (nova-3, keyterms; transcribes live)
-Release  ──► flush the last results (~0.5 s) ──► Claude cleanup (optional) ──► apply replacements ──► ⌘V
-             if streaming fails: upload the saved WAV to /v1/listen instead
+Release  ──► record 0.5 s more, flush the last results ──► Claude cleanup (optional) ──► apply replacements ──► ⌘V
+             if streaming fails or falls behind: upload the saved WAV to /v1/listen instead
+Idle     ──► one DeepgramRecorder --stream --standby waits with the mic set up but off, so a
+             press only has to switch the mic on (~0.2 s instead of ~0.4 s, or ~2 s after idle)
 ```
 
 - [`src/deepgram_dictation/core.lua`](src/deepgram_dictation/core.lua): pure logic (config, URL

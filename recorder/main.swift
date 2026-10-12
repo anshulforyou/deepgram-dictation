@@ -86,7 +86,16 @@ final class MicCapture {
         self.onBuffer = onBuffer
     }
 
+    private var running = false
+
     func start() throws {
+        try prepare()
+        try run()
+    }
+
+    /// Everything short of switching the mic on: the slow part of starting (about 200 ms, and
+    /// seconds when the Mac has been idle). The mic stays off, so no recording indicator shows.
+    func prepare() throws {
         try installTap()
         observer = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main
@@ -95,13 +104,18 @@ final class MicCapture {
             do {
                 self.engine.inputNode.removeTap(onBus: 0)
                 try self.installTap()
-                try self.engine.start()
+                if self.running { try self.engine.start() }
             } catch {
                 FileHandle.standardError.write("mic restart failed: \(error)\n".data(using: .utf8)!)
             }
         }
         engine.prepare()
+    }
+
+    /// Switches the mic on. Call on the main thread, after prepare().
+    func run() throws {
         try engine.start()
+        running = true
     }
 
     private func installTap() throws {
@@ -472,14 +486,21 @@ func printMicUsers() {
 /// microphone permission.
 ///
 ///   DeepgramRecorder --stream --url <wss://...> [--save <file.wav>]
+///   DeepgramRecorder --stream --standby [--save <file.wav>]
 ///   (API key in the DEEPGRAM_API_KEY environment variable)
+///
+/// With --standby the mic is set up but left off, {"event": "ready"} is printed, and recording
+/// starts when a "start <wss://...>" line arrives on stdin. Starting the mic is then about 250 ms
+/// faster, and seconds faster when the Mac has been idle. Exits if stdin closes first.
 ///
 /// Prints {"event": "listening"} once the mic delivers real audio (Bluetooth mics such as AirPods
 /// are silent for a second or two while they switch on).
-/// SIGINT: stop recording, flush, and print {"transcript": "..."} (or {"error": ..., "audio": ...}).
+/// SIGINT: stop recording, flush, and print {"transcript": "..."}. If Deepgram's results don't cover
+/// all the audio (a slow connection), prints {"error": ..., "audio": ...} instead of a partial transcript.
 /// SIGTERM: cancel immediately and print nothing.
 final class StreamSession {
-    private let url: URL
+    private let url: URL?
+    private let standby: Bool
     private let apiKey: String
     private let saveURL: URL?
     private let queue = DispatchQueue(label: "stream")
@@ -492,18 +513,49 @@ final class StreamSession {
     private var transcribedUntil = 0.0   // end time (s) of the latest final result
     private var audioSeconds: Double?    // total audio sent, known once recording stops
     private var socketError: String?
+    private var flushed = false          // Deepgram sent Metadata: every result has arrived
     private var stopping = false
     private var finished = false
     private var signalSources: [DispatchSourceSignal] = []
 
-    init(url: URL, apiKey: String, saveURL: URL?) {
+    init(url: URL?, standby: Bool, apiKey: String, saveURL: URL?) {
         self.url = url
+        self.standby = standby
         self.apiKey = apiKey
         self.saveURL = saveURL
     }
 
     func start() {
         installSignalHandlers()
+        let capture = makeCapture()
+        do {
+            try capture.prepare()
+            self.capture = capture
+        } catch {
+            output(["error": "\(error)"])
+        }
+        if standby {
+            emit(["event": "ready"])
+            waitForStartCommand()
+        } else if let url {
+            begin(url)
+        }
+    }
+
+    private func waitForStartCommand() {
+        Thread.detachNewThread { [weak self] in
+            while let line = readLine() {
+                if let url = StandbyCommand.url(from: line) {
+                    DispatchQueue.main.async { self?.begin(url) }
+                    return
+                }
+            }
+            exit(0) // stdin closed: Hammerspoon quit or replaced this standby
+        }
+    }
+
+    /// Opens the Deepgram stream and switches the mic on.
+    private func begin(_ url: URL) {
         if let saveURL {
             FileManager.default.createFile(atPath: saveURL.path, contents: WAV.header(dataBytes: 0))
             saveHandle = try? FileHandle(forWritingTo: saveURL)
@@ -517,7 +569,15 @@ final class StreamSession {
         socket.resume()
         receive()
 
-        let capture = MicCapture { [weak self] buffer, _ in
+        do {
+            try capture?.run()
+        } catch {
+            output(["error": "\(error)"])
+        }
+    }
+
+    private func makeCapture() -> MicCapture {
+        MicCapture { [weak self] buffer, _ in
             guard let self, let data = buffer.floatChannelData else { return }
             let samples = UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength))
             let pcm = PCM.int16Data(samples)
@@ -529,12 +589,6 @@ final class StreamSession {
                 }
                 self.sendAudio(pcm)
             }
-        }
-        do {
-            try capture.start()
-            self.capture = capture
-        } catch {
-            output(["error": "\(error)"])
         }
     }
 
@@ -573,7 +627,10 @@ final class StreamSession {
                 "\(alt?["transcript"] ?? "")").utf8))
         }
         // Deepgram sends Metadata last, after flushing every result, when we close the stream.
-        if json["type"] as? String == "Metadata", stopping { return finish() }
+        if json["type"] as? String == "Metadata", stopping {
+            flushed = true
+            return finish()
+        }
         guard json["type"] as? String == "Results" else { return }
         let channel = json["channel"] as? [String: Any]
         let alternatives = channel?["alternatives"] as? [[String: Any]]
@@ -616,10 +673,16 @@ final class StreamSession {
             try? saveHandle.close()
         }
         socket?.cancel(with: .normalClosure, reason: nil)
-        if let socketError, finals.isEmpty {
-            output(["error": socketError, "audio": saveURL?.path ?? NSNull()])
-        } else {
+        let covered = audioSeconds.map {
+            StreamCompletion.isComplete(transcribedUntil: transcribedUntil, audioSeconds: $0)
+        } ?? false
+        if flushed || covered {
             output(["transcript": finals.joined(separator: " ")])
+        } else {
+            // Never hand back part of what was said: the caller uploads the saved audio instead.
+            let reason = socketError ?? String(format: "stream incomplete: %.1f of %.1f s transcribed",
+                                               transcribedUntil, audioSeconds ?? 0)
+            output(["error": reason, "audio": saveURL?.path ?? NSNull()])
         }
     }
 
@@ -654,20 +717,21 @@ final class StreamSession {
 
 func runStreamMode() -> Never {
     var args = CommandLine.arguments.dropFirst()
-    var url: URL?, save: URL?
+    var url: URL?, save: URL?, standby = false
     while let arg = args.popFirst() {
         switch arg {
+        case "--standby": standby = true
         case "--url": url = args.popFirst().flatMap(URL.init(string:))
         case "--save": save = args.popFirst().map { URL(fileURLWithPath: $0) }
         default: break
         }
     }
     let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] ?? ""
-    guard let url, !key.isEmpty else {
-        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream --url WSS_URL [--save FILE]\n".utf8))
+    guard url != nil || standby, !key.isEmpty else {
+        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream (--url WSS_URL | --standby) [--save FILE]\n".utf8))
         exit(2)
     }
-    let session = StreamSession(url: url, apiKey: key, saveURL: save)
+    let session = StreamSession(url: url, standby: standby, apiKey: key, saveURL: save)
     session.start()
     dispatchMain()
 }

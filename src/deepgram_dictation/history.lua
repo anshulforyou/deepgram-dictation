@@ -73,6 +73,16 @@ function M.flagLast()
   return record
 end
 
+-- Path of the newest saved recording, or nil.
+function M.lastAudio()
+  local all = stems()
+  for i = #all, 1, -1 do
+    local wav = DIR .. "/" .. all[i] .. ".wav"
+    if hs.fs.attributes(wav) then return wav end
+  end
+  return nil
+end
+
 function M.dir() return DIR end
 
 return M

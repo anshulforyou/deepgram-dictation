@@ -111,6 +111,17 @@ enum StreamCompletion {
     }
 }
 
+enum StandbyCommand {
+    /// The Deepgram URL from the "start <wss url>" line Hammerspoon writes to a standby recorder's
+    /// stdin when the dictation key goes down, or nil for anything else.
+    static func url(from line: String) -> URL? {
+        let parts = line.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ", maxSplits: 1)
+        guard parts.count == 2, parts[0] == "start", let url = URL(string: String(parts[1])),
+              url.scheme == "wss" || url.scheme == "ws" else { return nil }
+        return url
+    }
+}
+
 enum WAV {
     /// 44-byte header for 16-bit mono PCM.
     static func header(dataBytes: Int, sampleRate: Int = 16000) -> Data {

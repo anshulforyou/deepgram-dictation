@@ -16,7 +16,8 @@ local M = { core = core, meeting = meeting }
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
 local enabled = true
-local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTimer
+local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTimer, slowTimer
+local standby -- { task, device, output }: a recorder with the mic set up but off, see prepareStandby
 local delivered = 0
 local indicator, menubar, apiKey
 
@@ -53,23 +54,37 @@ local function pasteText(text)
   end
 end
 
--- Cleans the transcript, pastes it and records the dictation. The recording is moved off
--- audioPath first, so a dictation started while this one is still being cleaned can't clobber it.
-local function deliver(raw, dict, via)
-  local transcribedAt = hs.timer.secondsSinceEpoch()
+local function inputDeviceName()
+  local d = hs.audiodevice.defaultInputDevice()
+  return d and d:name()
+end
+
+-- Moves the recording off audioPath, so a dictation started meanwhile can't clobber it.
+local function moveRecording()
   delivered = delivered + 1
   local recording = audioPath:gsub("%.wav$", "-" .. delivered .. ".wav")
-  if not os.rename(audioPath, recording) then recording = audioPath end
-  local record = {
+  return os.rename(audioPath, recording) and recording or audioPath
+end
+
+-- The recording (moved off audioPath unless `recording` already is) and its history record.
+local function takeRecording(via, recording)
+  local transcribedAt = hs.timer.secondsSinceEpoch()
+  recording = recording or moveRecording()
+  return recording, {
     at = os.date("!%Y-%m-%dT%H:%M:%SZ"), via = via, model = cfg.model, language = cfg.language,
     seconds = releasedAt and startedAt and math.floor((releasedAt - startedAt) * 100 + 0.5) / 100,
     deepgramMs = releasedAt and math.floor((transcribedAt - releasedAt) * 1000 + 0.5),
     -- Time from pressing the key to the first audio from the mic: speech before that is lost.
     micMs = micReadyAt and startedAt and math.floor((micReadyAt - startedAt) * 1000 + 0.5),
     tailSeconds = cfg.tailSeconds,
-    device = (function() local d = hs.audiodevice.defaultInputDevice() return d and d:name() end)(),
-    raw = raw,
+    device = inputDeviceName(),
   }
+end
+
+-- Cleans the transcript, pastes it and records the dictation.
+local function deliver(raw, dict, via, moved)
+  local recording, record = takeRecording(via, moved)
+  record.raw = raw
   if raw == "" then return history.save(recording, record) end
   local names = cleanup.namesFor(dict)
   cleanup.run(raw, names, function(text, info)
@@ -83,47 +98,54 @@ local function deliver(raw, dict, via)
   end)
 end
 
-local function transcribe()
+-- Deepgram couldn't be reached at all. The recording is kept in the dictation history, so
+-- nothing said is lost: "Retry last dictation" in the menu transcribes it again.
+local function keepFailed(reason, recording)
+  setIndicator(nil)
+  log("transcription failed: %s", reason)
+  if not history.enabled() then
+    os.remove(recording)
+    hs.alert.show("Deepgram error, see Hammerspoon console")
+    return
+  end
+  local _, record = takeRecording("upload", recording)
+  record.error = reason
+  history.save(recording, record)
+  hs.alert.show("Couldn't reach Deepgram. The recording is saved:\n🎙 menu → Retry last dictation", 5)
+end
+
+local function transcribe(label)
   local key = getApiKey()
   if not key then
     setIndicator(nil)
     hs.alert.show("Deepgram API key not found in Keychain ('" .. cfg.keychainName .. "')")
     return
   end
-  local f = io.open(audioPath, "rb")
+  local recording = moveRecording()
+  local f = io.open(recording, "rb")
   if not f then setIndicator(nil) return end
   local audio = f:read("a")
   f:close()
 
   local dict = loadDictionary()
   local _, keyterms = cleanup.namesFor(dict)
-  setIndicator("⏳ Transcribing…")
+  setIndicator(label or "⏳ Transcribing…")
   hs.http.asyncPost(core.buildListenUrl(cfg, keyterms), audio, {
     ["Authorization"] = "Token " .. key,
     ["Content-Type"] = "audio/wav",
   }, function(status, body)
     if status ~= 200 then
-      setIndicator(nil)
-      os.remove(audioPath)
-      log("HTTP %s: %s", tostring(status), tostring(body))
       if status == 401 or status == 403 then apiKey = nil end
-      hs.alert.show("Deepgram error (" .. tostring(status) .. "), see Hammerspoon console")
-      return
+      return keepFailed("HTTP " .. tostring(status) .. ": " .. tostring(body), recording)
     end
     local ok, resp = pcall(hs.json.decode, body)
     local text, err = core.extractTranscript(ok and resp or nil)
-    if not text then
-      setIndicator(nil)
-      os.remove(audioPath)
-      log("bad response: %s", err)
-      hs.alert.show("Deepgram returned an unexpected response")
-      return
-    end
+    if not text then return keepFailed("bad response: " .. tostring(err), recording) end
     if text == "" then
       setIndicator(nil)
       hs.alert.show("No speech detected", 1)
     end
-    deliver(text, dict, "upload")
+    deliver(text, dict, "upload", recording)
   end)
 end
 
@@ -152,41 +174,86 @@ local function finishStreaming(stdout, dict)
     end
     deliver(result.transcript, dict, "stream")
   else
-    -- Streaming failed (e.g. network blip): upload the saved recording instead.
+    -- The stream failed or fell behind (a slow connection): the recorder never hands back a
+    -- partial transcript, so upload the whole recording instead.
     log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
-    transcribe()
+    transcribe("⏳ Slow connection, uploading…")
   end
 end
 
--- Streams audio to Deepgram while the key is held (much faster than uploading afterwards).
-local function startStreaming(helper)
+local function recorderHelper() return meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder" end
+
+local prepareStandby -- defined below
+
+-- Starts DeepgramRecorder in stream mode. The same callbacks serve a standby recorder, which
+-- only becomes `recorder` once the key is pressed.
+local function spawnRecorder(args)
   local key = getApiKey()
-  if not key then
+  if not key then return nil end
+  local proc = { output = "" }
+  proc.task = hs.task.new(recorderHelper(), function(_, stdout)
+    proc.output = proc.output .. (stdout or "")
+    if standby == proc then standby = nil end
+    if recorder == proc.task then
+      recorder = nil
+      if slowTimer then slowTimer:stop() slowTimer = nil end
+      finishStreaming(proc.output, proc.dict)
+      prepareStandby()
+    end
+  end, function(_, stdout)
+    proc.output = proc.output .. (stdout or "")
+    -- When the mic actually started delivering audio (recorded to measure lost first words).
+    if recorder == proc.task and not micReadyAt and proc.output:find('"event":"listening"', 1, true) then
+      micReadyAt = hs.timer.secondsSinceEpoch()
+    end
+    return true
+  end, args)
+  proc.task:setEnvironment({
+    DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
+  })
+  if not proc.task:start() then return nil end
+  return proc
+end
+
+-- Keeps one recorder waiting with the mic set up but switched off (no recording indicator), so
+-- pressing the key only has to switch the mic on: about 150 ms instead of 400 ms, and instead of
+-- up to 2 s when the Mac has been idle. Speech in that gap is lost, so this saves first words.
+prepareStandby = function()
+  if standby or not (cfg.streaming and enabled) or not hs.fs.attributes(recorderHelper()) then return end
+  standby = spawnRecorder({ "--stream", "--standby", "--save", audioPath })
+  if standby then standby.device = inputDeviceName() end
+end
+
+local function dropStandby()
+  local proc = standby
+  standby = nil
+  if proc and proc.task:isRunning() then proc.task:terminate() end
+end
+
+-- Streams audio to Deepgram while the key is held (much faster than uploading afterwards).
+local function startStreaming()
+  if not getApiKey() then
     hs.alert.show("Deepgram API key not found in Keychain ('" .. cfg.keychainName .. "')")
     return
   end
   local dict = loadDictionary()
   local _, keyterms = cleanup.namesFor(dict)
-  local output = ""
-  recorder = hs.task.new(helper, function(_, stdout)
-    recorder = nil
-    finishStreaming(output .. (stdout or ""), dict)
-  end, function(_, stdout)
-    output = output .. (stdout or "")
-    -- When the mic actually started delivering audio (recorded to measure lost first words).
-    if not micReadyAt and output:find('"event":"listening"', 1, true) then
-      micReadyAt = hs.timer.secondsSinceEpoch()
+  local url = core.buildStreamUrl(cfg, keyterms)
+  local proc = standby
+  standby = nil
+  -- A standby set up for another mic (AirPods connected since) would record the wrong one.
+  if proc and proc.task:isRunning() and proc.device == inputDeviceName() then
+    proc.task:setInput("start " .. url .. "\n")
+  else
+    if proc and proc.task:isRunning() then proc.task:terminate() end
+    proc = spawnRecorder({ "--stream", "--url", url, "--save", audioPath })
+    if not proc then
+      hs.alert.show("Could not start recording, see Hammerspoon console")
+      return
     end
-    return true
-  end, { "--stream", "--url", core.buildStreamUrl(cfg, keyterms), "--save", audioPath })
-  recorder:setEnvironment({
-    DEEPGRAM_API_KEY = key, HOME = os.getenv("HOME"), TMPDIR = os.getenv("TMPDIR"), PATH = "/usr/bin:/bin",
-  })
-  if not recorder:start() then
-    recorder = nil
-    hs.alert.show("Could not start recording, see Hammerspoon console")
-    return
   end
+  proc.dict = dict
+  recorder = proc.task
   setIndicator("🎙 Listening…")
 end
 
@@ -194,8 +261,7 @@ local function startRecording()
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt = false, false, nil
   startedAt = hs.timer.secondsSinceEpoch()
-  local helper = meeting.recorderApp() .. "/Contents/MacOS/DeepgramRecorder"
-  if cfg.streaming and hs.fs.attributes(helper) then return startStreaming(helper) end
+  if cfg.streaming and hs.fs.attributes(recorderHelper()) then return startStreaming() end
   if not recBinary then
     hs.alert.show("deepgram-dictation: sox not found. Run `brew install sox`.")
     return
@@ -229,7 +295,13 @@ local function stopRecording()
     local task = recorder
     tailTimer = hs.timer.doAfter(cfg.tailSeconds, function()
       tailTimer = nil
-      if recorder == task then task:interrupt() end -- SIGINT: finalise the WAV / flush Deepgram's results
+      if recorder ~= task then return end
+      task:interrupt() -- SIGINT: finalise the WAV / flush Deepgram's results
+      -- Results normally arrive within half a second; say why when they don't.
+      slowTimer = hs.timer.doAfter(2, function()
+        slowTimer = nil
+        if recorder == task then setIndicator("⏳ Slow connection…") end
+      end)
     end)
   else
     recorder:terminate() -- SIGTERM: discard
@@ -247,13 +319,30 @@ local function buildMenu()
   local items = {
     { title = status, disabled = true },
     { title = enabled and "Disable dictation" or "Enable dictation",
-      fn = function() enabled = not enabled updateMenubar() end },
+      fn = function()
+        enabled = not enabled
+        if enabled then prepareStandby() else dropStandby() end
+        updateMenubar()
+      end },
     { title = "-" },
   }
   if history.enabled() then
     table.insert(items, { title = "Flag last dictation as wrong", fn = function()
       local record = history.flagLast()
       hs.alert.show(record and "Flagged. Find it in the dictation history." or "No saved dictation yet", 2)
+    end })
+    table.insert(items, { title = "Retry last dictation", fn = function()
+      local wav = history.lastAudio()
+      if not wav or recorder then
+        hs.alert.show(wav and "Finish the current dictation first" or "No saved recording to retry", 2)
+        return
+      end
+      local src, dst = io.open(wav, "rb"), io.open(audioPath, "wb")
+      if src and dst then dst:write(src:read("a")) end
+      if src then src:close() end
+      if dst then dst:close() end
+      startedAt, releasedAt, micReadyAt = nil, nil, nil
+      transcribe()
     end })
     table.insert(items, { title = "Open dictation history", fn = function()
       hs.fs.mkdir(history.dir())
@@ -307,6 +396,7 @@ function M.start(overrides)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
+  prepareStandby()
   log("ready (hotkey=%s, model=%s, language=%s, cleanup=%s)", cfg.hotkey, cfg.model, cfg.language,
     tostring(cfg.cleanup))
   return M
@@ -321,6 +411,8 @@ function M.stop()
   if M.menuHotkey then M.menuHotkey:delete() M.menuHotkey = nil end
   if M.popup then M.popup:delete() M.popup = nil end
   if tailTimer then tailTimer:stop() tailTimer = nil end
+  if slowTimer then slowTimer:stop() slowTimer = nil end
+  dropStandby()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)
