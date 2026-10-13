@@ -411,7 +411,7 @@ function M.run(fields, scr, progress, done)
     end
     local front = hs.application.frontmostApplication()
     if bundle and (not front or front:bundleID() ~= bundle) then
-      return finish(nil, "stopped", "another app came to the front")
+      return finish(nil, "stopped", (front and front:name() or "another app") .. " came to the front")
     end
     table.insert(actions, a.name)
     progress(#actions)
