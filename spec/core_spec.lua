@@ -871,6 +871,18 @@ describe("filling a form", function()
     end)
   end)
 
+  it("scales its caps to the plan", function()
+    local five = {}
+    for i = 1, 5 do five[i] = { label = "F" .. i, value = "x", skip = false } end
+    assert.are.same({ 40, 90 }, { core.fillLimits(five) })
+    table.insert(five, { label = "Image", value = "", skip = false, file = { id = "i" } })
+    table.insert(five, { label = "Skipped", value = "", skip = true })
+    assert.are.same({ 50, 114 }, { core.fillLimits(five) })
+    local many = {}
+    for i = 1, 40 do many[i] = { label = "F" .. i, value = "x", skip = false } end
+    assert.are.same({ 80, 180 }, { core.fillLimits(many) })
+  end)
+
   describe("fillClickAllowed", function()
     it("clicks fields and pop-ups but never buttons, links or checkboxes", function()
       assert.is_true(core.fillClickAllowed("AXTextField"))
@@ -1003,6 +1015,14 @@ describe("uploading a file from memory", function()
     assert.is_false(core.checkFillAction("upload_file", { file = "/etc/passwd" }, fields))
     assert.is_true(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 1 }))
     assert.is_false(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 2 }))
+  end)
+
+  it("drags files only onto drop zones, never onto buttons or links", function()
+    assert.is_true(core.dropTarget("AXStaticText"))
+    assert.is_true(core.dropTarget("AXGroup"))
+    assert.is_false(core.dropTarget("AXButton"))
+    assert.is_false(core.dropTarget("AXLink"))
+    assert.is_false(core.dropTarget(nil))
   end)
 
   it("clicks upload buttons and drop zones, never anything that saves or publishes", function()

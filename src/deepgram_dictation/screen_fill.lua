@@ -7,7 +7,7 @@
 --     clicked (checked through macOS Accessibility before each click), so nothing gets submitted
 --   - password fields are never typed into
 --   - Esc, or any mouse or keyboard input from the user, stops her at once, and so does switching
---     to another app; at most core.FILL_MAX_ACTIONS actions and core.FILL_MAX_SECONDS seconds
+--     to another app; at most the actions and seconds core.fillLimits allows for the plan
 --
 -- Screenshots go to Anthropic's API and are never saved.
 
@@ -31,8 +31,8 @@ local draggers = {} -- luacheck: ignore 241
 local openDialog -- defined below
 local OPEN_BUTTONS = { Open = true, Choose = true, Upload = true, Select = true }
 
--- A macOS open dialog, when one is in front: the focused window or a sheet on it, with an
--- Open-like button. Returns the dialog's element or nil.
+-- A macOS open dialog, when one is in front, with an Open-like button. Browsers show it as a sheet,
+-- and then the focused window is the sheet itself (seen with Brave). Returns its element or nil.
 local function findButton(el, depth)
   if depth > 6 or not el then return false end
   local ok, role = pcall(function() return el:attributeValue("AXRole") end)
@@ -48,15 +48,51 @@ local function findButton(el, depth)
   return false
 end
 
+-- Accessibility calls on a busy dialog can block for seconds; these give up quickly instead.
+local function quick(el)
+  if el then pcall(function() el:setTimeout(0.5) end) end
+  return el
+end
+
+-- Whether a sheet or dialog is in front. Inside a file dialog we opened, this is that dialog,
+-- or its "Go to folder" sheet (Go and Cancel, no Open button).
+local function dialogInFront()
+  local win = hs.window.focusedWindow()
+  if not win then return false end
+  local el = quick(hs.axuielement.windowElement(win))
+  local ok, role = pcall(function() return el:attributeValue("AXRole") end)
+  local oks, sub = pcall(function() return el:attributeValue("AXSubrole") end)
+  local okt, sheets = pcall(function() return el:attributeValue("AXSheets") end)
+  return (ok and role == "AXSheet") or (oks and (sub == "AXDialog" or sub == "AXSystemDialog"))
+    or (okt and type(sheets) == "table" and #sheets > 0)
+end
+
+-- Closes whatever dialog was left open, so it can't cover the page.
+local function closeDialogs()
+  for _ = 1, 3 do
+    if not dialogInFront() then return end
+    hs.eventtap.keyStroke({}, "escape", 0)
+    hs.timer.usleep(300000)
+  end
+end
+
 openDialog = function()
   local win = hs.window.focusedWindow()
   if not win then return nil end
-  local el = hs.axuielement.windowElement(win)
+  local el = quick(hs.axuielement.windowElement(win))
   local candidates = {}
-  local ok, sheets = pcall(function() return el:attributeValue("AXSheets") end)
-  for _, sheet in ipairs(ok and sheets or {}) do table.insert(candidates, sheet) end
-  local okr, sub = pcall(function() return el:attributeValue("AXSubrole") end)
-  if okr and (sub == "AXDialog" or sub == "AXSystemDialog") then table.insert(candidates, el) end
+  local function get(e, name)
+    local ok, value = pcall(function() return e:attributeValue(name) end)
+    return ok and value or nil
+  end
+  local sub = get(el, "AXSubrole")
+  if get(el, "AXRole") == "AXSheet" or sub == "AXDialog" or sub == "AXSystemDialog" then
+    table.insert(candidates, el)
+  end
+  for _, sheet in ipairs(get(el, "AXSheets") or {}) do table.insert(candidates, sheet) end
+  for _, child in ipairs(get(el, "AXChildren") or {}) do
+    if get(child, "AXRole") == "AXSheet" then table.insert(candidates, child) end
+  end
   for _, c in ipairs(candidates) do
     if findButton(c, 0) then return c end
   end
@@ -125,7 +161,10 @@ local function exposePage(app)
   return ok and EXPOSE_WAIT or 0
 end
 
+-- A single click goes through hs.eventtap.leftClick: Chrome only opens a file picker for a click it
+-- treats as a real gesture, and hand-built down/up events didn't count (make test-fill).
 local function click(point, count)
+  if count == 1 then return hs.eventtap.leftClick(point) end
   local types = hs.eventtap.event.types
   local state = hs.eventtap.event.properties.mouseEventClickState
   for n = 1, count do
@@ -152,6 +191,7 @@ function M.run(fields, scr, progress, done)
   local bundle = app and app:bundleID()
   local exposeWait = app and exposePage(app) or 0
 
+  local maxActions, maxSeconds = core.fillLimits(fields)
   local started = hs.timer.secondsSinceEpoch()
   local finished, body, menuOpen = false, nil, false
   local uploaded = {} -- file id: upload attempts
@@ -186,8 +226,8 @@ function M.run(fields, scr, progress, done)
     finish(nil, "stopped", "you used the mouse or keyboard")
     return false
   end):start()
-  deadline = hs.timer.doAfter(core.FILL_MAX_SECONDS, function()
-    finish(nil, "stopped", "it took longer than " .. core.FILL_MAX_SECONDS .. " seconds")
+  deadline = hs.timer.doAfter(maxSeconds, function()
+    finish(nil, "stopped", "it took longer than " .. maxSeconds .. " seconds")
   end)
 
   local function shoot(cb)
@@ -209,21 +249,26 @@ function M.run(fields, scr, progress, done)
   -- Types the path into a macOS open dialog (Go to folder) and opens it. Only ever presses Return
   -- while that dialog is the one in front.
   local function chooseInDialog(path, cb)
+    local function fail(why)
+      closeDialogs()
+      cb(false, why)
+    end
     hs.eventtap.keyStroke({ "cmd", "shift" }, "g", 0)
     hs.timer.doAfter(0.7, function()
       if finished then return end
-      if not openDialog() then return cb(false, "the file dialog closed") end
+      if not dialogInFront() then return fail("the file dialog closed") end
       hs.eventtap.keyStrokes(path)
       hs.timer.doAfter(0.5, function()
-        if finished or not openDialog() then return cb(false, "the file dialog closed") end
+        if finished then return end
+        if not dialogInFront() then return fail("the file dialog closed") end
         hs.eventtap.keyStroke({}, "return", 0) -- go to the file
         hs.timer.doAfter(0.9, function()
-          if finished or not openDialog() then return cb(false, "the file dialog closed") end
+          if finished then return end
+          if not dialogInFront() then return fail("the file dialog closed") end
           hs.eventtap.keyStroke({}, "return", 0) -- open it
-          waitFor(function() return not openDialog() end, 3, function(closed)
+          waitFor(function() return not dialogInFront() end, 3, function(closed)
             if closed then return cb(true) end
-            hs.eventtap.keyStroke({}, "escape", 0)
-            cb(false, "the file dialog didn't accept the file")
+            fail("the file dialog didn't accept the file")
           end)
         end)
       end)
@@ -277,20 +322,45 @@ function M.run(fields, scr, progress, done)
     if not target then return cb(res("Error: coordinate outside the screen", true), true) end
     local el = element(target)
     local role = attr(el, "AXRole")
-    local label = attr(el, "AXTitle") or attr(el, "AXDescription") or attr(el, "AXValue")
-    local allowed, why = core.uploadClickAllowed(role, type(label) == "string" and label or nil)
+    local label
+    for _, name in ipairs({ "AXTitle", "AXDescription", "AXValue" }) do
+      local v = attr(el, name)
+      if not label and type(v) == "string" and v:match("%S") then label = v end
+    end
+    local allowed, why = core.uploadClickAllowed(role, label)
+    log("upload %s at %d,%d: %s %q, %s", file.name, target.x, target.y, tostring(role), tostring(label),
+      allowed and "allowed" or why)
     if not allowed then return cb(res("Refused: " .. why, true), true) end
     click(target, 1)
-    waitFor(openDialog, 2, function(dialog)
-      if finished then return end
+    local function waitForDialog(retry, after)
+      waitFor(openDialog, 3, function(dialog)
+        if finished then return end
+        -- The first click on an upload button sometimes only focuses the page.
+        if not dialog and retry and not core.dropTarget(role) then
+          click(target, 1)
+          return waitForDialog(false, after)
+        end
+        after(dialog)
+      end)
+    end
+    waitForDialog(true, function(dialog)
+      log("upload %s: %s", file.name, dialog and "file dialog open" or "no file dialog")
+      -- A button that opened no dialog isn't a drop zone: dropping a file on it would make the
+      -- browser open the file itself, possibly in place of the form.
+      if not dialog and not core.dropTarget(role) then
+        return cb(res("Error: that didn't open a file dialog, and it isn't a drop zone", true), true)
+      end
       if dialog then
         return chooseInDialog(file.path, function(ok, err)
+          log("upload %s: dialog %s", file.name, ok and "accepted the file" or tostring(err))
           if ok then return cb(res("OK: " .. file.name .. " chosen in the file dialog")) end
           cb(res("Error: " .. tostring(err), true), true)
         end)
       end
       dragOnto(file.path, target, function(ok, err)
+        log("upload %s: drag %s", file.name, ok and "dropped" or tostring(err))
         if ok then return cb(res("OK: " .. file.name .. " dropped onto the drop zone")) end
+        if openDialog() then hs.eventtap.keyStroke({}, "escape", 0) end -- never leave a picker open
         cb(res("Error: " .. tostring(err) .. ". Take a screenshot to see what the page shows.", true), true)
       end)
     end)
@@ -303,8 +373,8 @@ function M.run(fields, scr, progress, done)
     end
     local ok, why = core.checkFillAction(a.name, a.input, fields, uploaded)
     if not ok then return cb(res("Refused: " .. why, true), true) end
-    if #actions >= core.FILL_MAX_ACTIONS then
-      return finish(nil, "stopped", "it reached " .. core.FILL_MAX_ACTIONS .. " actions")
+    if #actions >= maxActions then
+      return finish(nil, "stopped", "it reached " .. maxActions .. " actions")
     end
     local front = hs.application.frontmostApplication()
     if bundle and (not front or front:bundleID() ~= bundle) then
@@ -312,6 +382,9 @@ function M.run(fields, scr, progress, done)
     end
     table.insert(actions, a.name)
     progress(#actions)
+    local detail = a.input.coordinate and string.format(" at %s,%s", tostring(a.input.coordinate[1]),
+      tostring(a.input.coordinate[2])) or a.input.text and string.format(" %q", a.input.text:sub(1, 30)) or ""
+    log("%d %s%s", #actions, a.name, detail)
     local input = a.input
     if not a.computer and a.name ~= "upload_file" then return cb(res("Refused: unknown tool", true), true) end
     local function after(result, failed)

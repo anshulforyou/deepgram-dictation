@@ -636,8 +636,15 @@ core.FILL_KEYS = {
   tab = true, ["shift+tab"] = true, backspace = true, delete = true, up = true, down = true,
   left = true, right = true, escape = true, ["cmd+a"] = true, space = true,
 }
-core.FILL_MAX_ACTIONS = 40
-core.FILL_MAX_SECONDS = 90
+-- Hard caps on a fill, scaled to the plan: a 5-field form gets about the 40 actions and 90 s it
+-- needs, uploads and bigger forms more, never past 80 actions or 3 minutes.
+function core.fillLimits(fields)
+  local n = 0
+  for _, f in ipairs(fields or {}) do
+    if not f.skip then n = n + (f.file and 2 or 1) end
+  end
+  return math.min(80, 15 + 5 * n), math.min(180, 30 + 12 * n)
+end
 -- Sonnet 5.5's limits for an image in a tool result.
 core.FILL_MAX_EDGE = 2576
 core.FILL_MAX_PIXELS = 3600000
@@ -795,6 +802,12 @@ core.UPLOAD_WORDS = { "upload", "choose", "browse", "select", "add", "replace", 
 core.UPLOAD_REFUSED = { "save", "submit", "publish", "send", "pay", "delete", "remove", "post", "confirm",
                         "buy", "order", "checkout", "sign", "agree", "accept", "next", "continue", "done" }
 
+-- Roles a drop zone shows up as (Brave: a plain text element reading "Drop your logo here").
+-- Files are only ever dragged onto these, never onto buttons or links.
+core.DROP_ROLES = { AXGroup = true, AXStaticText = true, AXImage = true, AXWebArea = true, AXUnknown = true }
+
+function core.dropTarget(role) return core.DROP_ROLES[role] == true end
+
 -- Whether the upload click may go to an element with this role and label. Drop zones are plain
 -- page areas (groups, text, images); buttons and links need an upload label.
 function core.uploadClickAllowed(role, label)
@@ -808,9 +821,7 @@ function core.uploadClickAllowed(role, label)
     end
     return false, "that button isn't an upload button"
   end
-  if role == "AXGroup" or role == "AXStaticText" or role == "AXImage" or role == "AXWebArea" or role == "AXUnknown" then
-    return true
-  end
+  if core.dropTarget(role) then return true end
   return false, "can't upload into " .. tostring(role or "an unknown element")
 end
 

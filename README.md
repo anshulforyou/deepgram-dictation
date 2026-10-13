@@ -187,7 +187,18 @@ seconds. These limits are enforced in code, not left to the model:
   click is checked through macOS Accessibility first). Saving or submitting is always yours.
 - She never types into a password field.
 - Esc stops her at once, and so does touching the mouse or keyboard or switching apps. She stops on
-  her own after 40 actions or 90 seconds.
+  her own after a set number of actions and seconds for the size of the form (40 and 90 for five
+  fields, never more than 80 and 3 minutes).
+
+**Uploading images.** An upload field (an image button or a drop zone) gets one of the images your
+memory points to: image paths named in a sweater's or project's memory, and the images in folders
+it names, under the same rules as the text. She sees small thumbnails of them and picks the one the
+field wants, and the plan shows the picture before you press Return. While filling, she only says
+where the file goes. The upload itself is done here: click the upload button and choose the file in
+the macOS file dialog (Return is only pressed while that dialog is in front), or, for a zone that
+only takes drag and drop, a real file drag through `GrandmaDrag`, a small helper built by
+`install.sh`. Upload clicks need an upload-like label and refuse anything that reads like save,
+submit or publish, and files are only ever dragged onto drop zones, never onto buttons.
 
 Each step sends a screenshot of that display to Anthropic. `make test-fill` fills a test form in
 Brave and checks that every value landed and nothing was submitted, ticked or invented, even

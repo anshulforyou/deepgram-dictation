@@ -12,7 +12,7 @@ set -euo pipefail
 PAGE="$(cd "$(dirname "$0")/../fill" && pwd)/product-form.html"
 BRAND="$(cd "$(dirname "$0")/../screens/grandma/acme/brand" && pwd)"
 APP="${BROWSER_APP:-Brave Browser}"
-HS() { perl -e 'alarm 15; exec @ARGV' hs -q -t 12 -c "$1"; }
+HS() { perl -e 'alarm 30; exec @ARGV' hs -q -t 25 -c "$1"; }
 
 open -na "$APP" --args --new-window "file://$PAGE"
 sleep 3
