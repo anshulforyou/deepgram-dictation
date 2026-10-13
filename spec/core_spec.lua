@@ -1073,3 +1073,31 @@ describe("uploading a file from memory", function()
   end)
 end)
 
+describe("learning from voice", function()
+  it("is on for questions and off for style by default", function()
+    local cfg = core.mergeConfig()
+    assert.is_true(cfg.learnFromVoice)
+    assert.is_false(cfg.learnStyle)
+  end)
+
+  it("recognises remember requests however they are punctuated", function()
+    assert.are.equal("the product photos are in ~/photos",
+      core.rememberText("Grandma, remember that the product photos are in ~/photos"))
+    assert.are.equal("Sam owns the backend", core.rememberText("remember: Sam owns the backend."))
+    assert.are.equal("the deck is final", core.rememberText("Hey grandma remember the deck is final"))
+    assert.are.equal("we launch on Monday", core.rememberText("Note that we launch on Monday"))
+    assert.are.equal("Priya prefers calls", core.rememberText("make a note Priya prefers calls"))
+  end)
+
+  it("leaves other questions alone", function()
+    assert.is_nil(core.rememberText("Do you remember what this button does?"))
+    assert.is_nil(core.rememberText("Where do I click to change billing?"))
+    assert.is_nil(core.rememberText("remember"))
+  end)
+
+  it("learns style only from dictations long enough to show it", function()
+    assert.is_true(core.styleWorthy("I think we should ship this on Monday after the review"))
+    assert.is_false(core.styleWorthy("yes sounds good"))
+  end)
+end)
+

@@ -50,6 +50,10 @@ core.DEFAULTS = {
   screenModel      = "claude-sonnet-5-5",
   screenEffort     = "low",     -- how hard Claude thinks: "low", "medium" or "high"
   screenTimeout    = 20,        -- seconds to wait for an answer
+
+  -- Learning from what you say to grandma (needs grandmaHome; writes proposals for `grandma review`)
+  learnFromVoice   = true,      -- distill each day's screen questions, fills and corrections; "remember ..."
+  learnStyle       = false,     -- also learn how you write from your dictations (patterns, never content)
 }
 
 core.OPTIONS = {
@@ -431,6 +435,31 @@ function core.hotkeyTransition(hotkey, keyCode, flags, active)
   if not spec or keyCode ~= spec.keyCode then return nil end
   if active then return "release" end
   return flags[spec.flag] and "press" or nil
+end
+
+-- "Grandma, remember ..." asked with Fn+Control: what to remember, or nil when the question is
+-- something else. Speech-to-text punctuates freely, so commas and a leading "hey" are allowed.
+core.REMEMBER_PATTERNS = {
+  "^grandma%s+remember%s+(.+)$", "^remember%s+(.+)$", "^note%s+that%s+(.+)$", "^make%s+a%s+note%s+(.+)$",
+}
+
+function core.rememberText(question)
+  local q = tostring(question or ""):gsub("[,.:;!]", " "):gsub("%s+", " "):match("^%s*(.-)%s*$")
+  local lower = q:lower():gsub("^hey%s+", "")
+  local offset = #q - #lower
+  for _, pattern in ipairs(core.REMEMBER_PATTERNS) do
+    local rest = lower:match(pattern)
+    if rest then
+      local start = offset + #lower - #rest + 1
+      return (q:sub(start):gsub("^that%s+", ""))
+    end
+  end
+  return nil
+end
+
+-- Dictations worth learning style from: long enough to show how someone writes.
+function core.styleWorthy(text)
+  return core.wordCount(text) >= 8
 end
 
 -- Whether a flagsChanged event while the hotkey is held asks about the screen. Control can go

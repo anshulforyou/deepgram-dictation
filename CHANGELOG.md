@@ -32,6 +32,14 @@ All notable changes to this project are documented here. The format follows
   press Return, and she fills it with Claude's computer use. She only types the values you
   confirmed and never presses Return or clicks a button, link or checkbox, so saving stays yours.
   Esc or any touch stops her. `make test-fill` checks it on a real form.
+- Grandma learns from what you say to her (with `grandmaHome`): each day's screen questions, fills
+  and corrections become memory proposals for `grandma review`, "grandma, remember ..." becomes one
+  right away, and with `learnStyle` your dictations teach `global/style.md` how you write, never
+  what about.
+
+### Fixed
+
+- Meeting proposals no longer send sweater memory files named like credentials to Claude.
 
 ### Changed
 
