@@ -175,9 +175,11 @@ def ensure_index_pointer(home, sweater):
 
 
 def sweater_memory(home, sweater, cap=MEMORY_CHAR_CAP):
-    """The sweater's always-loaded memory (its root .md files), capped in size."""
+    """The sweater's always-loaded memory (its root .md files), capped in size. Files named like a
+    credential, hidden files and symlinks are left out, as everywhere else memory is read."""
+    import names_from_grandma  # here, not at the top: names_from_grandma imports this module
     parts = []
-    for f in sorted((home / sweater).glob("*.md")):
+    for f in names_from_grandma.root_files(home / sweater):
         parts.append(f"## {sweater}/{f.name}\n{f.read_text(errors='replace')}")
     text = "\n\n".join(parts)
     return text if len(text) <= cap else text[:cap] + "\n[memory truncated]"

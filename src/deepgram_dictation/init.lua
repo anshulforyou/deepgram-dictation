@@ -13,6 +13,7 @@ local history = require("deepgram_dictation.history")
 local screen = require("deepgram_dictation.screen")
 local overlay = require("deepgram_dictation.screen_overlay")
 local screenFill = require("deepgram_dictation.screen_fill")
+local voice = require("deepgram_dictation.voice")
 
 local M = { core = core, meeting = meeting }
 
@@ -110,9 +111,12 @@ local function clearBadge(s)
   if not recorder and (session == s or not session or not session.asked) then setIndicator(nil) end
 end
 
--- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
--- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
--- she can't answer, so nothing said is lost.
+-- Saves a screen question once its outcome is final, and logs it for grandma to learn from.
+local function saveScreen(recording, record)
+  history.save(recording, record)
+  voice.screen(record)
+end
+
 -- The fill plan as the user sees it before saying yes.
 local function planText(answer)
   local lines = { answer.text ~= "" and answer.text or "Grandma will fill in:", "" }
@@ -145,10 +149,13 @@ local function fillForm(answer, s, recording, record)
     end
     record.screen.fill = { status = info.status, reason = info.reason, ms = info.ms, actions = info.actions,
                            summary = summary }
-    history.save(recording, record)
+    saveScreen(recording, record)
   end)
 end
 
+-- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
+-- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
+-- she can't answer, so nothing said is lost.
 local function answerScreen(raw, recording, record, s)
   local function finish(answer, info)
     endGlow(s)
@@ -169,7 +176,7 @@ local function answerScreen(raw, recording, record, s)
         end,
         onEscape = function()
           record.screen.confirmed = false
-          history.save(recording, record)
+          saveScreen(recording, record)
         end,
       }, pictures)
     end
@@ -182,7 +189,29 @@ local function answerScreen(raw, recording, record, s)
       hs.pasteboard.setContents(raw)
       overlay.showPanel(tostring(info.reason) .. "\n\nYour question is on the clipboard.", "Couldn't answer", true)
     end
-    history.save(recording, record)
+    saveScreen(recording, record)
+  end
+  -- "Grandma, remember ..." is noted as a memory proposal, not asked about the screen.
+  local remember = voice.enabled() and core.rememberText(raw)
+  if remember then
+    endGlow(s)
+    setIndicator("🧶 Grandma is noting that…", GRANDMA_BADGE)
+    return voice.remember(remember, function(result, err)
+      clearBadge(s)
+      record.screen = { kind = "remember", status = err and "error" or "ok", reason = err,
+                        answer = result and result.line, memory = result and { result.scope } or nil }
+      if result then
+        -- global isn't a sweater, so `grandma review global` doesn't list it: plain review does.
+        local review = result.scope == "global" and "grandma review" or ("grandma review " .. result.scope)
+        overlay.showPanel(string.format("%s\n\nFor %s, in %s. Review it with: %s", result.line,
+          result.scope, result.target, review), "Noted for review")
+      else
+        hs.pasteboard.setContents(remember)
+        overlay.showPanel("Couldn't note that: " .. tostring(err) .. "\n\nWhat you said is on the clipboard.",
+          "Couldn't note it", true)
+      end
+      history.save(recording, record)
+    end)
   end
   if s.error then return finish(nil, { status = "error", reason = s.error }) end
   if not s.shot then
@@ -221,6 +250,7 @@ local function deliver(raw, dict, via, moved, s)
     local pasted = core.applyReplacements(text, dict.replacements)
     clearBadge(s) -- keeps the badge of a dictation started meanwhile
     pasteText(pasted)
+    voice.dictation(pasted)
     record.cleanup = info
     record.cleaned = info.status == "ok" and text or nil
     record.pasted = pasted
@@ -523,6 +553,7 @@ local function buildMenu()
   if history.enabled() then
     table.insert(items, { title = "Flag last dictation as wrong", fn = function()
       local record = history.flagLast()
+      voice.flag(record)
       hs.alert.show(record and "Flagged. Find it in the dictation history." or "No saved dictation yet", 2)
     end })
     table.insert(items, { title = "Retry last dictation", fn = function()
@@ -598,6 +629,7 @@ function M.start(overrides)
   history.setup(cfg)
   screen.setup(cfg)
   screenFill.setup(cfg)
+  voice.setup(cfg)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
@@ -621,6 +653,7 @@ function M.stop()
   screenFill.stop("Hammerspoon reloaded")
   overlay.teardown()
   screen.teardown()
+  voice.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

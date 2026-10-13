@@ -222,6 +222,29 @@ though the page asks an AI to do all three. It takes over your mouse and keyboar
   `secrets/`, meetings, logs, proposals, symlinks, or anything named like a credential.
 - The dictation history records which memory went with each question.
 
+**Grandma learns from what you say to her.** With `grandmaHome` set, nothing goes straight into
+memory: everything becomes a proposal in your grandma home's `proposals/` folder, which you accept
+or drop with `grandma review`, the same as grandma's own session proposals.
+
+- **Each day's questions, fills and corrections.** Screen questions, form fills and what happened
+  to them (a plan you cancelled, a fill you stopped, a follow-up like "no, use the wide photo" a
+  moment later, a dictation you flagged as wrong) are logged locally. About once an hour, any
+  finished day is read with grandma's capture doctrine through the Claude Code CLI, and becomes one
+  proposal per sweater it touched, or none when nothing is durable. What was on the screen is never
+  taken as a fact about you, only what you said or did. Logs are deleted 30 days after they're
+  read. `learnFromVoice = false` turns this off.
+- **"Grandma, remember ..."** With Fn+Control, start with "remember" (or "note that"): "remember
+  that the product photos are in ~/Brand/photos". It skips the screen and is written as a proposal
+  right away, for the project or sweater you named, or global. A question ("remember which tab had
+  the invoice?") is still asked about the screen.
+- **How you write (optional, `learnStyle = true`).** Dictations of 8 words or more are kept, with
+  the app they went to, and after 150 of them (or 20 and a week) Claude reads them for how you
+  write, never what about, and proposes changes to `global/style.md`. A proposal that repeats any 6
+  words in a row from a dictation is refused, so nothing you dictated can be quoted into memory.
+  The dictations are deleted once read, or after 30 days if they never are.
+
+Plain dictation (Fn alone) is never read for facts: it's you writing to other people.
+
 **Testing it.** [`tests/screens/`](tests/screens/) has made-up screens (an inbox, an analytics
 dashboard, account settings, a calendar, a sign-up form with errors, a team chat, and a phishing
 email that tries to give the assistant orders, and a store admin with an empty product form)
@@ -392,6 +415,8 @@ deepgramDictation.start({
 | `screenModel` | `"claude-sonnet-5-5"` | Claude model for screen questions |
 | `screenEffort` | `"low"` | How hard Claude thinks about a screen question: `"low"`, `"medium"` or `"high"` |
 | `screenTimeout` | `20` | Seconds to wait for an answer about the screen |
+| `learnFromVoice` | `true` | With `grandmaHome`: turn each day's screen questions, fills and corrections, and "remember ...", into memory proposals |
+| `learnStyle` | `false` | With `grandmaHome`: also propose changes to `global/style.md` from how you write in dictations |
 | `anthropicKeychainName` | `"anthropic-api-key"` | Keychain service name holding the Anthropic API key |
 | `keytermNames` | `50` | How many names from grandma memory Deepgram listens for |
 | `keepDictations` | `0` | Keep the last N dictations (audio and text) for review and replay |
