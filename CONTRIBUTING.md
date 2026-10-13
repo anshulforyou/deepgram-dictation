@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve deepgram-dictation. Bug reports, docs fixes, and features are all
+Thanks for helping improve grandma-yawn. Bug reports, docs fixes, and features are all
 welcome.
 
 ## Ground rules

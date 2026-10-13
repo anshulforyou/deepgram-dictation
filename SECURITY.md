@@ -4,7 +4,7 @@
 
 Please **do not** open a public issue for security problems. Instead, report them privately
 through GitHub's
-[private vulnerability reporting](https://github.com/anshulforyou/deepgram-dictation/security/advisories/new).
+[private vulnerability reporting](https://github.com/anshulforyou/grandma-yawn/security/advisories/new).
 
 Include a description, steps to reproduce, and the impact. You should get an initial reply
 within 7 days.

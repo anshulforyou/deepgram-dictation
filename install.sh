@@ -67,7 +67,7 @@ fi
 if ! grep -qF -e "$MARKER" "$HS_DIR/init.lua" 2>/dev/null; then
   cat >> "$HS_DIR/init.lua" <<'EOF'
 
--- deepgram-dictation (https://github.com/anshulforyou/deepgram-dictation)
+-- deepgram-dictation (https://github.com/anshulforyou/grandma-yawn)
 deepgramDictation = require("deepgram_dictation")
 deepgramDictation.start({
   -- hotkey = "fn",        -- or "rightOption", "rightCommand", "rightControl", "rightShift"

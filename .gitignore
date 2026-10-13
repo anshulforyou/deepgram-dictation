@@ -9,3 +9,4 @@ deepgram-dictionary.json
 .luarocks/
 .lua/
 recorder/build/
+assets/preview-*.png
