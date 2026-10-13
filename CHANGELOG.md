@@ -21,6 +21,10 @@ All notable changes to this project are documented here. The format follows
 - A standby recorder with the mic set up but off: recording starts about 0.2 s after the key
   goes down instead of 0.4 s, or up to 2 s after the Mac has been idle, so first words aren't lost.
 - `tailSeconds`: recording continues 0.5 s after release, so the last word isn't cut off.
+- Asking grandma about the screen (`screenAssist`): hold Fn+Control and ask. She writes replies
+  where you're typing or answers in a panel, from a screenshot of the display under the mouse
+  (Claude Sonnet). A rose glow runs round the screen's edges while she looks. `make eval-screen`
+  checks her answers on made-up screens.
 
 ### Changed
 

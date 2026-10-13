@@ -44,6 +44,12 @@ core.DEFAULTS = {
   anthropicKeychainName = "anthropic-api-key",
   keytermNames     = 50,        -- names (most mentioned first) Deepgram is primed with; all go to Claude
   keepDictations   = 0,         -- keep the last N dictations (audio + text) for review and replay
+
+  -- Asking about the screen: hold Control as well as the hotkey (sends a screenshot to Anthropic's API)
+  screenAssist     = false,     -- Fn+Control: ask grandma about the screen, or have her write something
+  screenModel      = "claude-sonnet-5-5",
+  screenEffort     = "low",     -- how hard Claude thinks: "low", "medium" or "high"
+  screenTimeout    = 20,        -- seconds to wait for an answer
 }
 
 core.OPTIONS = {
@@ -63,6 +69,10 @@ core.HOTKEYS = {
 }
 
 core.MEETING_MODES = { online = true, inPerson = true }
+
+-- Held together with the hotkey, this modifier turns a dictation into a question about the screen.
+core.SCREEN_FLAG = "ctrl"
+core.SCREEN_EFFORTS = { low = true, medium = true, high = true }
 
 core.REC_CANDIDATES = { "/opt/homebrew/bin/rec", "/usr/local/bin/rec" }
 core.PYTHON_CANDIDATES = { "/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3" }
@@ -153,8 +163,16 @@ function core.mergeConfig(overrides)
   if not core.MEETING_MODES[cfg.meetingMode] then
     error("deepgram-dictation: meetingMode must be \"online\" or \"inPerson\"", 2)
   end
-  if type(cfg.cleanupTimeout) ~= "number" or cfg.cleanupTimeout <= 0 then
-    error("deepgram-dictation: cleanupTimeout must be a positive number of seconds", 2)
+  for _, name in ipairs({ "cleanupTimeout", "screenTimeout" }) do
+    if type(cfg[name]) ~= "number" or cfg[name] <= 0 then
+      error("deepgram-dictation: " .. name .. " must be a positive number of seconds", 2)
+    end
+  end
+  if not core.SCREEN_EFFORTS[cfg.screenEffort] then
+    error("deepgram-dictation: screenEffort must be \"low\", \"medium\" or \"high\"", 2)
+  end
+  if cfg.screenAssist and core.HOTKEYS[cfg.hotkey].flag == core.SCREEN_FLAG then
+    error("deepgram-dictation: screenAssist uses Control, so the hotkey can't be a Control key", 2)
   end
   for _, name in ipairs({ "keepDictations", "keytermNames" }) do
     local n = cfg[name]
@@ -413,6 +431,75 @@ function core.hotkeyTransition(hotkey, keyCode, flags, active)
   if not spec or keyCode ~= spec.keyCode then return nil end
   if active then return "release" end
   return flags[spec.flag] and "press" or nil
+end
+
+-- Whether a flagsChanged event while the hotkey is held asks about the screen. Control can go
+-- down before or after the hotkey, and the dictation stays a screen question once it has.
+function core.wantsScreen(cfg, flags)
+  return cfg.screenAssist == true and flags[core.SCREEN_FLAG] == true
+end
+
+-- What grandma returns for a screen question: text to paste where the user is typing, or an
+-- answer to show them.
+core.SCREEN_SCHEMA = {
+  type = "object",
+  properties = {
+    kind = { type = "string", enum = { "insert", "answer" } },
+    text = { type = "string" },
+  },
+  required = { "kind", "text" },
+  additionalProperties = false,
+}
+
+-- Messages API request body for a spoken `question` about a screenshot (base64 `image`).
+-- Thinking is adaptive (Sonnet 5.5 can't turn it off) and kept short with a low effort.
+function core.screenRequest(cfg, systemPrompt, question, image, mediaType)
+  return {
+    model = cfg.screenModel,
+    max_tokens = 4096,
+    thinking = { type = "adaptive" },
+    output_config = { effort = cfg.screenEffort, format = { type = "json_schema", schema = core.SCREEN_SCHEMA } },
+    system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
+    messages = { { role = "user", content = {
+      { type = "image", source = { type = "base64", media_type = mediaType or "image/jpeg", data = image } },
+      { type = "text", text = "<question>" .. question .. "</question>" },
+    } } },
+  }
+end
+
+-- { kind, text } from a decoded Messages API response, or nil plus what went wrong. A reply
+-- that isn't the expected JSON is still shown, as an answer, rather than thrown away.
+function core.parseScreenAnswer(resp, decode)
+  if type(resp) ~= "table" then return nil, "unexpected response" end
+  if resp.type == "error" then
+    return nil, "api error: " .. tostring(type(resp.error) == "table" and resp.error.message or resp.error)
+  end
+  if resp.stop_reason == "refusal" then return nil, "Claude declined to answer" end
+  if resp.stop_reason ~= "end_turn" then return nil, "stopped: " .. tostring(resp.stop_reason) end
+  local parts = {}
+  for _, block in ipairs(type(resp.content) == "table" and resp.content or {}) do
+    if type(block) == "table" and block.type == "text" then table.insert(parts, block.text) end
+  end
+  local raw = table.concat(parts):match("^%s*(.-)%s*$")
+  if raw == "" then return nil, "empty answer" end
+  local ok, value = pcall(decode, raw)
+  if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
+      and type(value.text) == "string" and value.text:match("%S") then
+    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$") }
+  end
+  return { kind = "answer", text = raw }
+end
+
+-- Top-left corner for a `w` x `h` panel near `point`, kept inside `frame` with a margin.
+function core.panelOrigin(point, w, h, frame, margin)
+  margin = margin or 16
+  local x = point.x + margin
+  local y = point.y + margin
+  if x + w > frame.x + frame.w - margin then x = point.x - w - margin end
+  if y + h > frame.y + frame.h - margin then y = frame.y + frame.h - h - margin end
+  x = math.max(frame.x + margin, math.min(x, frame.x + frame.w - w - margin))
+  y = math.max(frame.y + margin, y)
+  return { x = x, y = y }
 end
 
 -- Classifies a process using the microphone (from DeepgramRecorder --mic-users).

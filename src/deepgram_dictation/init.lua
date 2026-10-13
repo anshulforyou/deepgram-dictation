@@ -10,6 +10,8 @@ local meeting = require("deepgram_dictation.meeting")
 local detector = require("deepgram_dictation.detector")
 local cleanup = require("deepgram_dictation.cleanup")
 local history = require("deepgram_dictation.history")
+local screen = require("deepgram_dictation.screen")
+local overlay = require("deepgram_dictation.screen_overlay")
 
 local M = { core = core, meeting = meeting }
 
@@ -20,6 +22,9 @@ local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTi
 local standby -- { task, device, output }: a recorder with the mic set up but off, see prepareStandby
 local usedStandby -- whether the current dictation started from the standby recorder
 local holding = false -- the key is down for the current recording (it can't be cancelled after)
+-- The current dictation. A screen question keeps its state here (asked, shot, error) so that a
+-- dictation started while grandma is still answering can't mix with it.
+local session
 local delivered = 0
 local indicator, menubar, apiKey
 
@@ -42,9 +47,17 @@ local function loadDictionary()
   return core.normalizeDictionary(ok and data or nil)
 end
 
-local function setIndicator(label)
-  if indicator then hs.alert.closeSpecific(indicator) indicator = nil end
-  if label then indicator = hs.alert.show(label, { textSize = 16, radius = 10 }, "infinite") end
+local BADGE = { textSize = 16, radius = 10 }
+local GRANDMA_BADGE = {
+  textSize = 16, radius = 10, strokeWidth = 1.5,
+  fillColor = { red = 0.11, green = 0.10, blue = 0.11, alpha = 0.92 },
+  strokeColor = { red = 0.98, green = 0.60, blue = 0.64, alpha = 0.9 },
+  textColor = { red = 1, green = 0.90, blue = 0.92 },
+}
+
+local function setIndicator(label, style, fade)
+  if indicator then hs.alert.closeSpecific(indicator, fade) indicator = nil end
+  if label then indicator = hs.alert.show(label, style or BADGE, "infinite") end
 end
 
 local function pasteText(text)
@@ -84,10 +97,54 @@ local function takeRecording(via, recording)
   }
 end
 
--- Cleans the transcript, pastes it and records the dictation.
-local function deliver(raw, dict, via, moved)
+-- Ends a screen question's glow, unless a newer screen question has taken it over. A capture
+-- still running for `s` won't show it afterwards.
+local function endGlow(s)
+  s.discarded = true
+  if session == s or not (session and session.asked) then overlay.hideGlow() end
+end
+
+-- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
+-- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
+-- she can't answer, so nothing said is lost.
+local function answerScreen(raw, recording, record, s)
+  local function finish(answer, info)
+    endGlow(s)
+    if not recorder then setIndicator(nil) end
+    if answer and answer.kind == "insert" then
+      pasteText(answer.text)
+    elseif answer then
+      hs.pasteboard.setContents(answer.text)
+      overlay.showPanel(answer.text, "Copied")
+    else
+      hs.pasteboard.setContents(raw)
+      overlay.showPanel(tostring(info.reason) .. "\n\nYour question is on the clipboard.", "Couldn't answer", true)
+    end
+    record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
+                      kind = answer and answer.kind, answer = answer and answer.text }
+    history.save(recording, record)
+  end
+  if s.error then return finish(nil, { status = "error", reason = s.error }) end
+  if not s.shot then
+    s.waiting = function() answerScreen(raw, recording, record, s) end -- the capture is still running
+    return
+  end
+  setIndicator("🧶 Grandma is thinking…", GRANDMA_BADGE)
+  screen.ask(raw, s.shot, finish)
+end
+
+-- Cleans the transcript, pastes it and records the dictation (or asks grandma, see answerScreen).
+local function deliver(raw, dict, via, moved, s)
   local recording, record = takeRecording(via, moved)
   record.raw = raw
+  if s and s.asked then
+    record.via = via .. "+screen"
+    if raw == "" then
+      endGlow(s)
+      return history.save(recording, record)
+    end
+    return answerScreen(raw, recording, record, s)
+  end
   if raw == "" then return history.save(recording, record) end
   local names = cleanup.namesFor(dict)
   cleanup.run(raw, names, function(text, info)
@@ -105,6 +162,7 @@ end
 -- nothing said is lost: "Retry last dictation" in the menu transcribes it again.
 local function keepFailed(reason, recording)
   setIndicator(nil)
+  overlay.hideGlow()
   log("transcription failed: %s", reason)
   if not history.enabled() then
     os.remove(recording)
@@ -117,7 +175,7 @@ local function keepFailed(reason, recording)
   hs.alert.show("Couldn't reach Deepgram. The recording is saved:\n🎙 menu → Retry last dictation", 5)
 end
 
-local function transcribe(label)
+local function transcribe(label, s)
   local key = getApiKey()
   if not key then
     setIndicator(nil)
@@ -126,13 +184,17 @@ local function transcribe(label)
   end
   local recording = moveRecording()
   local f = io.open(recording, "rb")
-  if not f then setIndicator(nil) return end
+  if not f then
+    setIndicator(nil)
+    overlay.hideGlow()
+    return
+  end
   local audio = f:read("a")
   f:close()
 
   local dict = loadDictionary()
   local _, keyterms = cleanup.namesFor(dict)
-  setIndicator(label or "⏳ Transcribing…")
+  setIndicator(label or "⏳ Transcribing…", s and s.asked and GRANDMA_BADGE or nil)
   hs.http.asyncPost(core.buildListenUrl(cfg, keyterms), audio, {
     ["Authorization"] = "Token " .. key,
     ["Content-Type"] = "audio/wav",
@@ -148,7 +210,7 @@ local function transcribe(label)
       setIndicator(nil)
       hs.alert.show("No speech detected", 1)
     end
-    deliver(text, dict, "upload", recording)
+    deliver(text, dict, "upload", recording, s)
   end)
 end
 
@@ -163,11 +225,12 @@ local function alertNoSpeech()
   hs.alert.show("No speech detected" .. (hint and ("\n" .. hint) or ""), hint and 5 or 1)
 end
 
-local function finishStreaming(stdout, dict)
+local function finishStreaming(stdout, dict, s)
   local result = core.parseStreamOutput(stdout, hs.json.decode) or {}
   if not sendOnExit then
     os.remove(audioPath)
     setIndicator(nil)
+    if s then endGlow(s) end
     -- Discarded on purpose (a tap, or cancelled) prints nothing. An error means the recorder died
     -- while the key was still held: say so rather than let the user keep talking to nothing.
     if result.error then
@@ -182,12 +245,12 @@ local function finishStreaming(stdout, dict)
       setIndicator(nil)
       alertNoSpeech()
     end
-    deliver(result.transcript, dict, "stream")
+    deliver(result.transcript, dict, "stream", nil, s)
   else
     -- The stream failed or fell behind (a slow connection): the recorder never hands back a
     -- partial transcript, so upload the whole recording instead.
     log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
-    transcribe("⏳ Slow connection, uploading…")
+    transcribe("⏳ Slow connection, uploading…", s)
   end
 end
 
@@ -207,7 +270,7 @@ local function spawnRecorder(args)
     if recorder == proc.task then
       recorder = nil
       if slowTimer then slowTimer:stop() slowTimer = nil end
-      finishStreaming(proc.output, proc.dict)
+      finishStreaming(proc.output, proc.dict, proc.session)
       prepareStandby()
     end
   end, function(_, stdout)
@@ -264,13 +327,17 @@ local function startStreaming()
     end
   end
   proc.dict = dict
+  proc.session = session
   recorder = proc.task
   setIndicator("🎙 Listening…")
 end
 
 local function startRecording()
+  overlay.closePanel()
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
+  session = {}
+  local s = session
   startedAt = hs.timer.secondsSinceEpoch()
   if cfg.streaming and hs.fs.attributes(recorderHelper()) then return startStreaming() end
   if not recBinary then
@@ -280,10 +347,11 @@ local function startRecording()
   recorder = hs.task.new(recBinary, function()
     recorder = nil
     if sendOnExit then
-      transcribe()
+      transcribe(nil, s)
     else
       os.remove(audioPath)
       setIndicator(nil)
+      endGlow(s)
     end
   end, { "-q", "-c", "1", "-r", "16000", "-b", "16", audioPath })
   if not recorder:start() then
@@ -303,7 +371,11 @@ local function stopRecording()
   local duration = releasedAt - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
   if sendOnExit then
-    setIndicator("⏳ Transcribing…")
+    if session and session.asked then
+      setIndicator("🧶 Grandma is thinking…", GRANDMA_BADGE)
+    else
+      setIndicator("⏳ Transcribing…")
+    end
     -- Keep recording a moment after the key comes up: people let go while the last word is still
     -- being spoken, and the mic delivers audio slightly late.
     local task = recorder
@@ -322,6 +394,40 @@ local function stopRecording()
   end
 end
 
+-- Control went down while the hotkey is held: this dictation is a question about the screen.
+-- The badge is hidden for the capture so it isn't in the screenshot; the glow then shows that
+-- grandma has seen the screen.
+local function askScreen(s)
+  s.asked = true
+  if not screen.permitted() then
+    screen.permitted(true) -- macOS shows its permission prompt (once)
+    s.error = "Grandma can't see the screen yet. Allow Hammerspoon in System Settings → Privacy & Security"
+      .. " → Screen & System Audio Recording, then reload Hammerspoon."
+    setIndicator("🧶 Grandma can't see the screen yet", GRANDMA_BADGE)
+    return
+  end
+  setIndicator(nil, nil, 0)
+  screen.capture(function(shot, err)
+    if err then
+      log("%s", err)
+      s.error = "Couldn't capture the screen (" .. err .. ")."
+    else
+      s.shot = shot
+      if not s.discarded then
+        overlay.showGlow(shot.screen)
+        if session == s then
+          setIndicator(holding and "🧶 Grandma is looking…" or "🧶 Grandma is thinking…", GRANDMA_BADGE)
+        end
+      end
+    end
+    if s.waiting then
+      local continue = s.waiting
+      s.waiting = nil
+      continue()
+    end
+  end)
+end
+
 local function updateMenubar()
   if not menubar then return end
   menubar:setTitle(meeting.menubarTitle() or (enabled and "🎙" or "🎙✕"))
@@ -329,7 +435,8 @@ end
 
 -- Built on every click so meeting items reflect the current state.
 local function buildMenu()
-  local status = "Dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey .. ")"
+  local status = "Dictation: " .. (enabled and "on" or "off") .. " (hold " .. cfg.hotkey
+    .. (screen.enabled() and ", add control to ask grandma about the screen" or "") .. ")"
   local items = {
     { title = status, disabled = true },
     { title = enabled and "Disable dictation" or "Enable dictation",
@@ -383,6 +490,10 @@ function M.start(overrides)
     local transition = core.hotkeyTransition(cfg.hotkey, e:getKeyCode(), e:getFlags(), recorder ~= nil)
     if transition == "press" then startRecording()
     elseif transition == "release" then stopRecording() end
+    if holding and recorder and session and not session.asked and screen.enabled()
+        and core.wantsScreen(cfg, e:getFlags()) then
+      askScreen(session)
+    end
     return false
   end):start()
 
@@ -410,12 +521,13 @@ function M.start(overrides)
   end
   cleanup.setup(cfg)
   history.setup(cfg)
+  screen.setup(cfg)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
   prepareStandby()
-  log("ready (hotkey=%s, model=%s, language=%s, cleanup=%s)", cfg.hotkey, cfg.model, cfg.language,
-    tostring(cfg.cleanup))
+  log("ready (hotkey=%s, model=%s, language=%s, cleanup=%s, screen=%s)", cfg.hotkey, cfg.model, cfg.language,
+    tostring(cfg.cleanup), tostring(screen.enabled()))
   return M
 end
 
@@ -430,6 +542,7 @@ function M.stop()
   if tailTimer then tailTimer:stop() tailTimer = nil end
   if slowTimer then slowTimer:stop() slowTimer = nil end
   dropStandby()
+  overlay.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

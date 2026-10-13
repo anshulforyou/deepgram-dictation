@@ -1,0 +1,49 @@
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import eval_screen as ev  # noqa: E402
+
+
+class GradeTest(unittest.TestCase):
+    CASE = {"kind": "answer", "include": [["Billing"], ["sidebar", "left"]], "exclude": ["**"]}
+
+    def test_passes_when_every_group_matches(self):
+        self.assertEqual(ev.grade(self.CASE, "answer", "Click billing in the left menu."), [])
+
+    def test_reports_wrong_kind_missing_words_and_forbidden_ones(self):
+        problems = ev.grade(self.CASE, "insert", "**Settings**")
+        self.assertEqual(problems, ["kind insert, expected answer", "missing 'Billing'",
+                                    "missing 'sidebar' / 'left'", "contains '**'"])
+
+    def test_password_check(self):
+        case = {"kind": "insert", "check": "password"}
+        self.assertEqual(ev.grade(case, "insert", "Harbor7Window42"), [])
+        self.assertTrue(ev.grade(case, "insert", "sunshine"))
+
+
+class ParseAnswerTest(unittest.TestCase):
+    def reply(self, text, stop="end_turn"):
+        return {"stop_reason": stop, "content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": text}]}
+
+    def test_reads_structured_answers(self):
+        self.assertEqual(ev.parse_answer(self.reply('{"kind": "insert", "text": " Hi "}')), ("insert", "Hi"))
+
+    def test_falls_back_to_an_answer_like_the_app(self):
+        self.assertEqual(ev.parse_answer(self.reply("Click Billing.")), ("answer", "Click Billing."))
+        self.assertEqual(ev.parse_answer(self.reply('{"kind": "shout", "text": "x"}'))[0], "answer")
+
+    def test_reports_stops(self):
+        self.assertEqual(ev.parse_answer(self.reply("{", "max_tokens")), (None, "stopped: max_tokens"))
+
+    def test_every_case_names_a_rendered_screen(self):
+        import json
+        for case in json.loads((ev.SCREENS / "cases.json").read_text()):
+            self.assertTrue((ev.SCREENS / f"{case['screen']}.png").exists(), case["screen"])
+            self.assertIn(case["kind"], ("insert", "answer"))
+
+
+if __name__ == "__main__":
+    unittest.main()

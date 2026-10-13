@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Settings</title><style>
+*{box-sizing:border-box}body{margin:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#111827;background:#f3f4f6;height:100vh}
+.top{background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 32px;display:flex;justify-content:space-between}.top b{font-size:17px}
+.wrap{max-width:980px;margin:28px auto;display:grid;grid-template-columns:200px 1fr;gap:28px}
+.tabs a{display:block;padding:9px 12px;border-radius:6px;color:#374151;text-decoration:none}.tabs a.on{background:#e0e7ff;color:#3730a3;font-weight:600}
+.panel{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:24px}h2{margin:0 0 4px;font-size:18px}p.sub{color:#6b7280;margin:0 0 20px}
+.item{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-top:1px solid #f3f4f6}.item small{display:block;color:#6b7280;margin-top:3px}
+.tog{width:40px;height:22px;border-radius:11px;background:#d1d5db;position:relative}.tog:after{content:"";position:absolute;width:18px;height:18px;border-radius:50%;background:#fff;top:2px;left:2px}
+.tog.on{background:#4f46e5}.tog.on:after{left:20px}.btn{border:1px solid #d1d5db;border-radius:6px;padding:7px 12px}.danger{color:#b91c1c;border-color:#fecaca}
+</style></head><body>
+<div class="top"><b>Fieldnote</b><span>Help · Sam Patel ▾</span></div>
+<div class="wrap"><div class="tabs"><a>Profile</a><a class="on">Security</a><a>Notifications</a><a>Connected apps</a><a>Plan &amp; billing</a><a>Data export</a></div>
+<div class="panel"><h2>Security</h2><p class="sub">Manage how you sign in to Fieldnote.</p>
+<div class="item"><div><b>Password</b><small>Last changed 14 months ago</small></div><span class="btn">Change password</span></div>
+<div class="item"><div><b>Two-factor authentication</b><small>Require a code from an authenticator app when you sign in</small></div><div class="tog"></div></div>
+<div class="item"><div><b>Passkeys</b><small>No passkeys added</small></div><span class="btn">Add passkey</span></div>
+<div class="item"><div><b>Sign-in alerts</b><small>Email me when a new device signs in</small></div><div class="tog on"></div></div>
+<div class="item"><div><b>Active sessions</b><small>3 devices: MacBook Pro, iPhone 15, Chrome on Windows</small></div><span class="btn danger">Sign out all other sessions</span></div>
+</div></div></body></html>

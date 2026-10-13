@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Calendar</title><style>
+*{box-sizing:border-box}body{margin:0;font:13px -apple-system,BlinkMacSystemFont,sans-serif;color:#1f2937;background:#fff;height:100vh;display:flex;flex-direction:column}
+header{display:flex;gap:16px;align-items:center;padding:14px 24px;border-bottom:1px solid #e5e7eb}header h1{font-size:20px;margin:0;font-weight:500}.btn{border:1px solid #d1d5db;border-radius:6px;padding:6px 12px}
+.cal{flex:1;display:grid;grid-template-columns:60px repeat(5,1fr);position:relative}
+.day{border-left:1px solid #e5e7eb;position:relative}.day h3{margin:0;padding:10px;font-weight:500;color:#6b7280;border-bottom:1px solid #e5e7eb;height:48px}.day h3 b{color:#111827;font-size:18px;margin-left:4px}
+.hours div{height:80px;color:#9ca3af;text-align:right;padding-right:8px;font-size:11px}.hours div:first-child{height:48px}
+.ev{position:absolute;left:4px;right:4px;border-radius:6px;padding:6px 8px;font-size:12px;line-height:1.35}.ev b{display:block}
+.a{background:#dbeafe;border-left:3px solid #2563eb}.b{background:#dcfce7;border-left:3px solid #16a34a}.c{background:#fef3c7;border-left:3px solid #d97706}.d{background:#fce7f3;border-left:3px solid #db2777}
+</style></head><body>
+<header><h1>November 2026</h1><span class="btn">Today</span><span class="btn">‹ ›</span><span style="margin-left:auto" class="btn">Week ▾</span></header>
+<div class="cal"><div class="hours"><div></div><div>9 AM</div><div>10 AM</div><div>11 AM</div><div>12 PM</div><div>1 PM</div><div>2 PM</div><div>3 PM</div><div>4 PM</div><div>5 PM</div><div>6 PM</div></div>
+<div class="day"><h3>Mon<b>17</b></h3><div class="ev a" style="top:48px;height:30px"><b>Team standup</b>9:00 – 9:20</div><div class="ev c" style="top:368px;height:120px"><b>Hiring panel: backend</b>1:00 – 2:30 · Room Kepler</div></div>
+<div class="day"><h3>Tue<b>18</b></h3><div class="ev a" style="top:48px;height:30px"><b>Team standup</b>9:00 – 9:20</div><div class="ev b" style="top:208px;height:80px"><b>1:1 with Jordan</b>11:00 – 12:00</div><div class="ev d" style="top:528px;height:80px"><b>Dentist</b>3:00 – 4:00</div></div>
+<div class="day"><h3>Wed<b>19</b></h3><div class="ev a" style="top:48px;height:30px"><b>Team standup</b>9:00 – 9:20</div><div class="ev c" style="top:128px;height:240px"><b>Roadmap planning</b>10:00 – 1:00 · Zoom</div></div>
+<div class="day"><h3>Thu<b>20</b></h3><div class="ev a" style="top:48px;height:30px"><b>Team standup</b>9:00 – 9:20</div><div class="ev b" style="top:368px;height:80px"><b>Lunch with Alex</b>1:00 – 2:00</div></div>
+<div class="day"><h3>Fri<b>21</b></h3><div class="ev a" style="top:48px;height:30px"><b>Team standup</b>9:00 – 9:20</div><div class="ev d" style="top:448px;height:160px"><b>Quarterly business review</b>2:00 – 4:00 · Board room</div></div>
+</div></body></html>
