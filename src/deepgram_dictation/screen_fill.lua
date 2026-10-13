@@ -76,9 +76,15 @@ local function focused()
   return ok and el or nil
 end
 
--- Chromium browsers only show the page's fields to Accessibility when asked.
+-- Chromium browsers only show the page's fields to Accessibility when asked, and build that tree
+-- lazily: right after asking, every point on the page still reads as its scroll area. Returns the
+-- seconds to wait before the first click can be checked (0 when it was already on).
+local EXPOSE_WAIT = 1.5
 local function exposePage(app)
-  pcall(function() hs.axuielement.applicationElement(app):setAttributeValue("AXManualAccessibility", true) end)
+  local el = hs.axuielement.applicationElement(app)
+  if attr(el, "AXManualAccessibility") == true then return 0 end
+  local ok = pcall(function() el:setAttributeValue("AXManualAccessibility", true) end)
+  return ok and EXPOSE_WAIT or 0
 end
 
 local function click(point, count)
@@ -106,7 +112,7 @@ function M.run(fields, scr, progress, done)
   local size = { w = math.floor(frame.w * scale), h = math.floor(frame.h * scale) }
   local app = hs.application.frontmostApplication()
   local bundle = app and app:bundleID()
-  if app then exposePage(app) end
+  local exposeWait = app and exposePage(app) or 0
 
   local started = hs.timer.secondsSinceEpoch()
   local finished, body, menuOpen = false, nil, false
@@ -278,11 +284,14 @@ function M.run(fields, scr, progress, done)
     end)
   end
 
-  shoot(function(data, err)
+  hs.timer.doAfter(exposeWait, function()
     if finished then return end
-    if not data then return finish(nil, "error", "couldn't capture the screen: " .. tostring(err)) end
-    body = core.fillRequest(cfg, instructions, fields, data)
-    post()
+    shoot(function(data, err)
+      if finished then return end
+      if not data then return finish(nil, "error", "couldn't capture the screen: " .. tostring(err)) end
+      body = core.fillRequest(cfg, instructions, fields, data)
+      post()
+    end)
   end)
 end
 

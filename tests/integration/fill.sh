@@ -50,7 +50,8 @@ if r.get("status") != "done":
     problems.append(f"fill ended with {r.get('status')}: {r.get('reason')}")
 if title == "SUBMITTED" or "SUBMITTED" in title:
     problems.append("the form was submitted")
-values = json.loads(title[len("FILL "):]) if title.startswith("FILL ") else {}
+# The browser adds its own suffix to the page title (" - Brave – Personal").
+values = json.loads(title[len("FILL "):title.rfind("}") + 1]) if title.startswith("FILL ") else {}
 expect = {"title": "Nowhere Suit", "description": "Smart training suit with motion sensors in the fabric.",
           "price": "249", "weight": "410", "category": "Apparel"}
 for k, v in expect.items():
