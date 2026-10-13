@@ -73,12 +73,17 @@ function M.flagLast()
   return record
 end
 
--- Path of the newest saved recording, or nil.
+-- Path of the newest saved recording and its record, or nil.
 function M.lastAudio()
   local all = stems()
   for i = #all, 1, -1 do
     local wav = DIR .. "/" .. all[i] .. ".wav"
-    if hs.fs.attributes(wav) then return wav end
+    if hs.fs.attributes(wav) then
+      local f = io.open(DIR .. "/" .. all[i] .. ".json", "r")
+      local ok, record = pcall(hs.json.decode, f and f:read("a") or "")
+      if f then f:close() end
+      return wav, ok and type(record) == "table" and record or nil
+    end
   end
   return nil
 end

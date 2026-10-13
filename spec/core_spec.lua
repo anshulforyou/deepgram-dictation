@@ -629,3 +629,123 @@ describe("dictationsToPrune", function()
     assert.are.same({}, core.dictationsToPrune({ "a", "b" }, 200))
   end)
 end)
+
+describe("screen questions", function()
+  local cfg = core.mergeConfig({ screenAssist = true })
+
+  it("is off by default and uses Sonnet with a low effort", function()
+    local defaults = core.mergeConfig()
+    assert.is_false(defaults.screenAssist)
+    assert.are.equal("claude-sonnet-5-5", defaults.screenModel)
+    assert.are.equal("low", defaults.screenEffort)
+  end)
+
+  it("validates its options", function()
+    assert.has_error(function() core.mergeConfig({ screenTimeout = 0 }) end)
+    assert.has_error(function() core.mergeConfig({ screenEffort = "max" }) end)
+  end)
+
+  it("can't use Control with a Control hotkey", function()
+    assert.has_error(function() core.mergeConfig({ screenAssist = true, hotkey = "rightControl" }) end)
+    assert.has_no.errors(function() core.mergeConfig({ hotkey = "rightControl" }) end)
+  end)
+
+  describe("wantsScreen", function()
+    it("is a screen question when Control is down with the hotkey, pressed first or second", function()
+      assert.is_true(core.wantsScreen(cfg, { fn = true, ctrl = true }))
+    end)
+
+    it("is plain dictation without Control", function()
+      assert.is_false(core.wantsScreen(cfg, { fn = true }))
+      assert.is_false(core.wantsScreen(cfg, { fn = true, alt = true }))
+    end)
+
+    it("is never a screen question when screenAssist is off", function()
+      assert.is_false(core.wantsScreen(core.mergeConfig(), { fn = true, ctrl = true }))
+    end)
+  end)
+
+  describe("screenRequest", function()
+    local body = core.screenRequest(cfg, "SYSTEM", "where do I click?", "BASE64", "image/jpeg")
+
+    it("sends the screenshot before the question", function()
+      local content = body.messages[1].content
+      assert.are.same({ type = "base64", media_type = "image/jpeg", data = "BASE64" }, content[1].source)
+      assert.are.equal("<question>where do I click?</question>", content[2].text)
+    end)
+
+    it("asks for the answer in a fixed shape", function()
+      assert.are.equal("json_schema", body.output_config.format.type)
+      assert.are.same({ "insert", "answer" }, body.output_config.format.schema.properties.kind.enum)
+      assert.are.equal("low", body.output_config.effort)
+    end)
+
+    it("uses adaptive thinking, which Sonnet 5.5 can't turn off, and caches the prompt", function()
+      assert.are.equal("adaptive", body.thinking.type)
+      assert.are.equal("claude-sonnet-5-5", body.model)
+      assert.are.equal("ephemeral", body.system[1].cache_control.type)
+    end)
+  end)
+
+  describe("parseScreenAnswer", function()
+    local decoded = {
+      ['{"kind":"insert","text":"  Hi Priya, Thursday works.  "}'] =
+        { kind = "insert", text = "  Hi Priya, Thursday works.  " },
+      ['{"kind":"answer","text":"Billing, in the left sidebar."}'] =
+        { kind = "answer", text = "Billing, in the left sidebar." },
+      ['{"kind":"shout","text":"x"}'] = { kind = "shout", text = "x" },
+      ['{"kind":"answer","text":" "}'] = { kind = "answer", text = " " },
+    }
+    local function decode(s)
+      if decoded[s] then return decoded[s] end
+      error("not json")
+    end
+    local function reply(text, stop)
+      return { stop_reason = stop or "end_turn",
+               content = { { type = "thinking", thinking = "" }, { type = "text", text = text } } }
+    end
+
+    it("reads text to insert, trimmed, skipping thinking blocks", function()
+      assert.are.same({ kind = "insert", text = "Hi Priya, Thursday works." },
+        core.parseScreenAnswer(reply('{"kind":"insert","text":"  Hi Priya, Thursday works.  "}'), decode))
+    end)
+
+    it("reads an answer", function()
+      assert.are.same({ kind = "answer", text = "Billing, in the left sidebar." },
+        core.parseScreenAnswer(reply('{"kind":"answer","text":"Billing, in the left sidebar."}'), decode))
+    end)
+
+    it("shows anything that isn't the expected JSON as an answer rather than losing it", function()
+      assert.are.same({ kind = "answer", text = "Click Billing." },
+        core.parseScreenAnswer(reply("Click Billing."), decode))
+      assert.are.equal("answer", core.parseScreenAnswer(reply('{"kind":"shout","text":"x"}'), decode).kind)
+      assert.are.equal("answer", core.parseScreenAnswer(reply('{"kind":"answer","text":" "}'), decode).kind)
+    end)
+
+    it("reports refusals, cut-off answers, errors and empty replies", function()
+      assert.are.equal("Claude declined to answer", select(2, core.parseScreenAnswer(reply("", "refusal"), decode)))
+      assert.are.equal("stopped: max_tokens", select(2, core.parseScreenAnswer(reply("{", "max_tokens"), decode)))
+      assert.are.equal("api error: overloaded",
+        select(2, core.parseScreenAnswer({ type = "error", error = { message = "overloaded" } }, decode)))
+      assert.are.equal("empty answer", select(2, core.parseScreenAnswer(reply("  "), decode)))
+      assert.are.equal("unexpected response", select(2, core.parseScreenAnswer(nil, decode)))
+    end)
+  end)
+
+  describe("panelOrigin", function()
+    local frame = { x = 0, y = 25, w = 1920, h = 1055 }
+
+    it("opens below and right of the mouse", function()
+      assert.are.same({ x = 116, y = 216 }, core.panelOrigin({ x = 100, y = 200 }, 440, 200, frame))
+    end)
+
+    it("flips left at the right edge and stays above the bottom", function()
+      assert.are.same({ x = 1404, y = 864 }, core.panelOrigin({ x = 1860, y = 1050 }, 440, 200, frame))
+    end)
+
+    it("stays inside the screen on a second display", function()
+      local right = { x = 1920, y = 0, w = 1440, h = 900 }
+      assert.are.same({ x = 1936, y = 16 }, core.panelOrigin({ x = 1900, y = -40 }, 440, 200, right))
+    end)
+  end)
+end)
