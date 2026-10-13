@@ -451,20 +451,85 @@ core.SCREEN_SCHEMA = {
   additionalProperties = false,
 }
 
+-- Lets Claude read a sweater or project from the user's grandma memory when the screen turns out
+-- to be about one the question didn't name.
+function core.openMemoryTool(names)
+  return {
+    name = "open_memory",
+    description = "Read the user's memory for one of their sweaters or projects from the catalog. "
+      .. "Use it when the screen or question is about one whose memory isn't included yet.",
+    input_schema = {
+      type = "object",
+      properties = { name = { type = "string", enum = names } },
+      required = { "name" },
+      additionalProperties = false,
+    },
+  }
+end
+
 -- Messages API request body for a spoken `question` about a screenshot (base64 `image`).
 -- Thinking is adaptive (Sonnet 5.5 can't turn it off) and kept short with a low effort.
-function core.screenRequest(cfg, systemPrompt, question, image, mediaType)
+-- `memory` (optional, from grandma_context.py) adds what grandma knows: the profile and the
+-- catalog in the system prompt, memory the question named before the screenshot, and the
+-- open_memory tool. The unchanging parts are cached.
+function core.screenRequest(cfg, systemPrompt, question, image, mediaType, memory)
+  local system = { { type = "text", text = systemPrompt } }
+  local content = {}
+  local tools
+  if memory then
+    local about = {}
+    if memory.profile and memory.profile ~= "" then
+      table.insert(about, "<profile>\n" .. memory.profile .. "\n</profile>")
+    end
+    if memory.catalog and memory.catalog ~= "" then
+      table.insert(about, "<memory_catalog>\n" .. memory.catalog .. "\n</memory_catalog>")
+    end
+    if #about > 0 then table.insert(system, { type = "text", text = table.concat(about, "\n\n") }) end
+    for _, m in ipairs(memory.memory or {}) do
+      table.insert(content, { type = "text", text = string.format('<memory name="%s" kind="%s">\n%s\n</memory>',
+        m.name, m.kind, m.text) })
+    end
+    if #content > 0 then content[#content].cache_control = { type = "ephemeral" } end
+    if memory.openable and #memory.openable > 0 then tools = { core.openMemoryTool(memory.openable) } end
+  end
+  system[#system].cache_control = { type = "ephemeral" }
+  table.insert(content, { type = "image",
+    source = { type = "base64", media_type = mediaType or "image/jpeg", data = image } })
+  table.insert(content, { type = "text", text = "<question>" .. question .. "</question>" })
   return {
     model = cfg.screenModel,
     max_tokens = 4096,
     thinking = { type = "adaptive" },
     output_config = { effort = cfg.screenEffort, format = { type = "json_schema", schema = core.SCREEN_SCHEMA } },
-    system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
-    messages = { { role = "user", content = {
-      { type = "image", source = { type = "base64", media_type = mediaType or "image/jpeg", data = image } },
-      { type = "text", text = "<question>" .. question .. "</question>" },
-    } } },
+    system = system,
+    tools = tools,
+    messages = { { role = "user", content = content } },
   }
+end
+
+-- The open_memory calls in a response that stopped to use tools: { { id, name } }.
+function core.memoryRequests(resp)
+  local out = {}
+  if type(resp) ~= "table" or resp.stop_reason ~= "tool_use" then return out end
+  for _, block in ipairs(type(resp.content) == "table" and resp.content or {}) do
+    if type(block) == "table" and block.type == "tool_use" then
+      local input = type(block.input) == "table" and block.input or {}
+      table.insert(out, { id = block.id, name = input.name, tool = block.name })
+    end
+  end
+  return out
+end
+
+-- Continues `body` after `resp` used tools: Claude's turn as it came (thinking blocks included,
+-- which must go back unchanged), then a result for each call: { id, text, isError }.
+function core.continueWithResults(body, resp, results)
+  local content = {}
+  for _, r in ipairs(results) do
+    table.insert(content, { type = "tool_result", tool_use_id = r.id, content = r.text, is_error = r.isError or nil })
+  end
+  table.insert(body.messages, { role = "assistant", content = resp.content })
+  table.insert(body.messages, { role = "user", content = content })
+  return body
 end
 
 -- { kind, text } from a decoded Messages API response, or nil plus what went wrong. A reply

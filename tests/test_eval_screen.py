@@ -18,6 +18,16 @@ class GradeTest(unittest.TestCase):
         self.assertEqual(problems, ["kind insert, expected answer", "missing 'Billing'",
                                     "missing 'sidebar' / 'left'", "contains '**'"])
 
+    def test_memory_must_match_when_the_case_says(self):
+        case = {"kind": "answer", "memory": ["acme"]}
+        self.assertEqual(ev.grade(case, "answer", "x", ["acme"]), [])
+        self.assertEqual(ev.grade(case, "answer", "x", ["acme", "spring-launch"]),
+                         ["memory ['acme', 'spring-launch'], expected ['acme']"])
+        self.assertEqual(ev.grade({"kind": "answer"}, "answer", "x", ["acme"]), [])
+
+    def test_kind_any(self):
+        self.assertEqual(ev.grade({"kind": "answer", "kind_any": True}, "insert", "x"), [])
+
     def test_password_check(self):
         case = {"kind": "insert", "check": "password"}
         self.assertEqual(ev.grade(case, "insert", "Harbor7Window42"), [])

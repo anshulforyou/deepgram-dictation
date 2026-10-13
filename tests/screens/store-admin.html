@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Shopfront admin</title><style>
+*{box-sizing:border-box}body{margin:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#1f2933;background:#f1f2f4;height:100vh;display:grid;grid-template-columns:230px 1fr}
+aside{background:#1a1c1e;color:#c9ccd1;padding:18px 12px}aside b{color:#fff;font-size:17px;display:block;margin:0 8px 22px}aside a{display:block;padding:8px 10px;border-radius:6px}aside a.on{background:#2d3035;color:#fff}
+main{padding:24px 40px}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}h1{font-size:20px;margin:0}
+.btn{border:1px solid #c4c8cd;border-radius:8px;padding:8px 14px;background:#fff}.btn.p{background:#1f2933;color:#fff;border-color:#1f2933}
+.grid{display:grid;grid-template-columns:2fr 1fr;gap:20px}.card{background:#fff;border:1px solid #e1e3e6;border-radius:10px;padding:20px;margin-bottom:20px}
+label{display:block;font-weight:600;font-size:13px;margin:14px 0 6px}label:first-child{margin-top:0}
+.in{border:1px solid #c4c8cd;border-radius:8px;padding:10px 12px;color:#9aa0a6;min-height:40px}.in.focus{border:2px solid #2c6ecb;color:#1f2933;min-height:150px}
+.caret{display:inline-block;width:1px;height:16px;background:#1f2933;vertical-align:middle}.row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+small{color:#6b7280}
+</style></head><body>
+<aside><b>Shopfront</b><a>Home</a><a>Orders</a><a class="on">Products</a><a>Customers</a><a>Analytics</a><a>Marketing</a><a>Settings</a></aside>
+<main><header><h1>Add product</h1><div><span class="btn">Discard</span> <span class="btn p">Save</span></div></header>
+<div class="grid"><div>
+<div class="card"><label>Title</label><div class="in">Short sleeve t-shirt</div>
+<label>Description</label><div class="in focus"><span class="caret"></span></div>
+<small>Shown on the product page. 2 to 4 sentences.</small></div>
+<div class="card"><div class="row"><div><label>Price</label><div class="in">$ 0.00</div></div><div><label>Compare-at price</label><div class="in">$ 0.00</div></div></div>
+<div class="row"><div><label>Weight</label><div class="in">0.0 g</div></div><div><label>SKU</label><div class="in"></div></div></div></div>
+</div><div>
+<div class="card"><label>Status</label><div class="in" style="color:#1f2933">Draft</div><label>Publish on</label><div class="in">Pick a date</div></div>
+<div class="card"><label>Product type</label><div class="in">e.g. Shoes</div><label>Vendor</label><div class="in">Acme Outdoors</div><label>Colors</label><div class="in">Add a color</div></div>
+</div></div></main></body></html>

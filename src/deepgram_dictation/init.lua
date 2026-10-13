@@ -126,7 +126,8 @@ local function answerScreen(raw, recording, record, s)
       overlay.showPanel(tostring(info.reason) .. "\n\nYour question is on the clipboard.", "Couldn't answer", true)
     end
     record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
-                      kind = answer and answer.kind, answer = answer and answer.text }
+                      kind = answer and answer.kind, answer = answer and answer.text,
+                      memory = info.memory, opened = info.opened }
     history.save(recording, record)
   end
   if s.error then return finish(nil, { status = "error", reason = s.error }) end
@@ -562,6 +563,7 @@ function M.stop()
   if slowTimer then slowTimer:stop() slowTimer = nil end
   dropStandby()
   overlay.teardown()
+  screen.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)
