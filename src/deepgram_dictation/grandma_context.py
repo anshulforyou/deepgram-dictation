@@ -183,7 +183,7 @@ def resolve_source(home, source):
 
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"}
-MAX_IMAGES = 8
+MAX_IMAGES = 24  # thumbnails are about 85 tokens each; a brand folder plus a photo folder is often 15+
 PATH_TOKEN = re.compile(r"(?<![\w@:])(~?/?[\w.-]+(?:/[\w.-]+)+/?)")
 
 
