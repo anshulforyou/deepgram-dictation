@@ -19,7 +19,9 @@ for --remember. Standard library only.
 """
 
 import argparse
+import contextlib
 import datetime
+import fcntl
 import json
 import re
 import sys
@@ -50,7 +52,9 @@ correction.
 
 Corrections matter most: a plan they cancelled, a fill they stopped, a follow-up that says she
 got something wrong ("no, use the wide photo"), a dictation they flagged. Each one is a chance
-to learn something grandma should have known. Questions alone teach little unless they reveal a
+to learn something grandma should have known. A flagged dictation is a message the user wrote to
+someone else that was transcribed wrong: it can only teach a name or word that is misheard,
+never a fact from what the message says, and is never quoted. Questions alone teach little unless they reveal a
 durable fact, preference or ongoing effort.
 
 Propose 0-5 atomic memory edits that these interactions justify, following the doctrine. For each:
@@ -171,12 +175,30 @@ def pending_days(support, today, state):
 
 
 def prune(support, state, today):
-    """Deletes interaction logs that were distilled more than KEEP_DAYS days ago."""
+    """Deletes interaction logs that were distilled more than KEEP_DAYS days ago, and dictations
+    kept for style that are that old (never read when learnStyle was turned off, or too few)."""
     cutoff = (datetime.date.fromisoformat(today) - datetime.timedelta(days=KEEP_DAYS)).isoformat()
     done = set(state.get("distilled", []))
     for f in (support / "interactions").glob("*.jsonl"):
         if f.stem in done and f.stem < cutoff:
             f.unlink()
+    for f in (support / "style").glob("*.jsonl"):
+        if f.stem < cutoff:
+            f.unlink()
+
+
+@contextlib.contextmanager
+def locked(support):
+    """True while this is the only distill or style run: an hourly run can outlast the next
+    tick, and a reloaded Hammerspoon starts its own."""
+    support.mkdir(parents=True, exist_ok=True)
+    with open(support / "voice_memory.lock", "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        yield True
 
 
 # Routing ------------------------------------------------------------------------------------
@@ -185,11 +207,20 @@ def scope_for(event, items):
     """The sweater an interaction belongs to: the first sweater or project whose memory it used
     (a project counts for its sweater), else global."""
     by_name = {i["name"].lower(): i for i in items}
-    for name in list(event.get("memory") or []) + list(event.get("opened") or []):
+    for name in names(event.get("memory")) + names(event.get("opened")):
         item = by_name.get(str(name).lower())
         if item:
             return item["name"] if item["kind"] == "sweater" else item["sweater"]
     return "global"
+
+
+def names(value):
+    """A list of names from a log field, whatever shape a damaged line left it in."""
+    return [str(v) for v in value] if isinstance(value, list) else []
+
+
+def flagged_texts(events):
+    return [str(e.get(k) or "") for e in events if e.get("kind") == "flag" for k in ("raw", "pasted")]
 
 
 def render(events):
@@ -209,16 +240,17 @@ def render(events):
         if e.get("status") not in (None, "ok"):
             lines.append(f"  grandma couldn't answer: {e.get('reason')}")
         elif answer == "fill":
+            fields = [f for f in e.get("fields") or [] if isinstance(f, dict)] if isinstance(e.get("fields"), list) else []
             plan = "; ".join(f"{f.get('label')}={'[skip]' if f.get('skip') else f.get('file') or f.get('value')}"
-                             for f in e.get("fields") or [])
+                             for f in fields)
             lines.append(f"  grandma planned a fill: {plan}")
             lines.append(f"  user {'confirmed' if e.get('confirmed') else 'cancelled'} the plan")
-            fill = e.get("fill") or {}
+            fill = e.get("fill") if isinstance(e.get("fill"), dict) else {}
             if fill:
                 lines.append(f"  fill {fill.get('status')}" + (f": {fill.get('reason')}" if fill.get("reason") else ""))
         else:
             lines.append(f"  grandma {answer}: {str(e.get('answer') or '')[:300]}")
-        used = list(e.get("memory") or []) + list(e.get("opened") or [])
+        used = names(e.get("memory")) + names(e.get("opened"))
         if used:
             lines.append(f"  memory used: {', '.join(used)}")
         out.append("\n".join(lines))
@@ -255,8 +287,10 @@ def write_proposal(home, scope, project, source, body, kind, stamp, out_dir=None
 
 # Distill ------------------------------------------------------------------------------------
 
-def distill_day(home, support, day, claude, model=None, out_dir=None):
-    """Proposals for one day's interactions, one per sweater touched. Returns their paths."""
+def distill_day(home, support, day, claude, model=None, out_dir=None, done=(), mark=None):
+    """Proposals for one day's interactions, one per sweater touched. Returns their paths.
+    Sweaters in `done` were handled by an earlier run that failed later on, and mark(scope) is
+    called as each one is handled, so a retry never proposes the same thing twice."""
     events = read_events(support / "interactions" / f"{day}.jsonl")
     if not events:
         return []
@@ -266,15 +300,23 @@ def distill_day(home, support, day, claude, model=None, out_dir=None):
         groups.setdefault(scope_for(e, items), []).append(e)
     paths = []
     for scope, group in sorted(groups.items()):
+        if scope in done:
+            continue
         prompt = DISTILL_PROMPT.format(
             day=day, scope=scope, none=NONE, doctrine=meeting_grandma.capture_doctrine(),
             memory=scope_memory(home, scope), events=render(group),
             global_hint=(" or global/identity.md, global/preferences.md, global/style.md. global has no log:"
                          " no thread-state here") if scope == "global" else "")
         body = meeting_organize.run_claude_text(claude, prompt, cwd=home, model=model, timeout=DISTILL_TIMEOUT).strip()
-        if body and NONE not in body.upper():
+        # A flagged dictation was written to someone else: none of it may be quoted into memory.
+        leaked = body and leaks(body, flagged_texts(group))
+        if leaked:
+            print(f"{day} {scope}: refused, the proposal repeats a flagged dictation ({leaked!r})", file=sys.stderr)
+        elif body and NONE not in body.upper():
             paths.append(write_proposal(home, scope, "voice", f"interactions/{day}.jsonl", body, "voice",
                                         day.replace("-", ""), out_dir))
+        if mark:
+            mark(scope)
     return paths
 
 
@@ -320,7 +362,8 @@ def remember(home, text, api_key, model, today=None):
 # Style --------------------------------------------------------------------------------------
 
 def words(text):
-    return re.findall(r"[a-z0-9']+", text.lower())
+    """Lowercase words, apostrophes dropped (straight or curly) so "don't" matches "don’t"."""
+    return re.findall(r"[^\W_]+", re.sub(r"['\u2018\u2019]", "", text.lower()))
 
 
 def leaks(proposal, samples, n=LEAK_WORDS):
@@ -390,6 +433,32 @@ def style(home, support, claude, model=None, force=False, out_dir=None, now=None
     return result
 
 
+def distill(home, support, args):
+    """--distill: each pending day (or --day), oldest first. A day is marked done only once all
+    of it was distilled. A failure stops the run, and the next one picks up where it stopped."""
+    state = load_state(support)
+    today = datetime.date.today().isoformat()
+    days = [args.day] if args.day else pending_days(support, today, state)
+    keep = not args.dry_run and not args.day
+    partial = state.setdefault("partial", {})
+    written = []
+    for day in days:
+        def mark(scope, day=day):
+            if keep:
+                partial.setdefault(day, []).append(scope)
+                save_state(support, state)
+        written += [str(p) for p in distill_day(home, support, day, args.claude, args.claude_model, args.dry_run,
+                                                done=partial.get(day, []) if keep else (), mark=mark)]
+        if keep:
+            partial.pop(day, None)
+            state.setdefault("distilled", []).append(day)
+            state["distilled"] = state["distilled"][-90:]
+            save_state(support, state)
+    if not args.dry_run:
+        prune(support, state, today)
+    return {"days": days, "proposals": written}
+
+
 # CLI ----------------------------------------------------------------------------------------
 
 def main(argv=None):
@@ -419,23 +488,16 @@ def main(argv=None):
             return 0
         if not args.claude or not args.support:
             raise VoiceError("--claude and --support are needed")
+        if args.day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", args.day):
+            raise VoiceError("--day must be YYYY-MM-DD")
         support = args.support.expanduser()
-        if args.distill:
-            state = load_state(support)
-            today = datetime.date.today().isoformat()
-            days = [args.day] if args.day else pending_days(support, today, state)
-            written = []
-            for day in days:
-                written += [str(p) for p in distill_day(home, support, day, args.claude, args.claude_model, args.dry_run)]
-                if not args.dry_run and not args.day:
-                    state.setdefault("distilled", []).append(day)
-                    state["distilled"] = state["distilled"][-90:]
-                    save_state(support, state)
-            if not args.dry_run:
-                prune(support, state, today)
-            print(json.dumps({"days": days, "proposals": written}))
-        else:
-            print(json.dumps(style(home, support, args.claude, args.claude_model, args.force, args.dry_run)))
+        with locked(support) as only:
+            if not only:
+                print(json.dumps({"days": [], "proposals": [], "skipped": "another run is in progress"}))
+            elif args.distill:
+                print(json.dumps(distill(home, support, args)))
+            else:
+                print(json.dumps(style(home, support, args.claude, args.claude_model, args.force, args.dry_run)))
     except (VoiceError, nfg.ExtractError, meeting_organize.OrganizeError, OSError) as e:
         print(str(e), file=sys.stderr)
         return 1

@@ -438,20 +438,25 @@ function core.hotkeyTransition(hotkey, keyCode, flags, active)
 end
 
 -- "Grandma, remember ..." asked with Fn+Control: what to remember, or nil when the question is
--- something else. Speech-to-text punctuates freely, so commas and a leading "hey" are allowed.
-core.REMEMBER_PATTERNS = {
-  "^grandma%s+remember%s+(.+)$", "^remember%s+(.+)$", "^note%s+that%s+(.+)$", "^make%s+a%s+note%s+(.+)$",
-}
+-- something else. Speech-to-text punctuates freely, so commas and a leading "hey" or "grandma"
+-- are allowed. A question ("Remember which tab had the invoice?") is still a question.
+core.REMEMBER_PATTERNS = { "^remember%s+(.+)$", "^note%s+that%s+(.+)$", "^make%s+a%s+note%s+(.+)$" }
+local REMEMBER_NOT = { "what", "which", "where", "when", "who", "whose", "why", "how", "if", "whether" }
 
 function core.rememberText(question)
+  if tostring(question or ""):match("%?%s*$") then return nil end
   local q = tostring(question or ""):gsub("[,.:;!]", " "):gsub("%s+", " "):match("^%s*(.-)%s*$")
-  local lower = q:lower():gsub("^hey%s+", "")
+  local lower = q:lower():gsub("^hey%s+", ""):gsub("^grandma%s+", "")
   local offset = #q - #lower
-  for _, pattern in ipairs(core.REMEMBER_PATTERNS) do
+  for i, pattern in ipairs(core.REMEMBER_PATTERNS) do
     local rest = lower:match(pattern)
     if rest then
+      local first = rest:match("^(%a+)")
+      for _, word in ipairs(i == 1 and REMEMBER_NOT or {}) do
+        if first == word then return nil end -- "remember which tab ..." asks, unpunctuated
+      end
       local start = offset + #lower - #rest + 1
-      return (q:sub(start):gsub("^that%s+", ""))
+      return (q:sub(start):gsub("^[Tt]hat%s+", ""))
     end
   end
   return nil

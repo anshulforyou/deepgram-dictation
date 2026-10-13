@@ -111,9 +111,6 @@ local function clearBadge(s)
   if not recorder and (session == s or not session or not session.asked) then setIndicator(nil) end
 end
 
--- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
--- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
--- she can't answer, so nothing said is lost.
 -- Saves a screen question once its outcome is final, and logs it for grandma to learn from.
 local function saveScreen(recording, record)
   history.save(recording, record)
@@ -156,6 +153,9 @@ local function fillForm(answer, s, recording, record)
   end)
 end
 
+-- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
+-- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
+-- she can't answer, so nothing said is lost.
 local function answerScreen(raw, recording, record, s)
   local function finish(answer, info)
     endGlow(s)
@@ -201,8 +201,10 @@ local function answerScreen(raw, recording, record, s)
       record.screen = { kind = "remember", status = err and "error" or "ok", reason = err,
                         answer = result and result.line, memory = result and { result.scope } or nil }
       if result then
-        overlay.showPanel(string.format("%s\n\nFor %s, in %s. Review it with: grandma review %s", result.line,
-          result.scope, result.target, result.scope), "Noted for review")
+        -- global isn't a sweater, so `grandma review global` doesn't list it: plain review does.
+        local review = result.scope == "global" and "grandma review" or ("grandma review " .. result.scope)
+        overlay.showPanel(string.format("%s\n\nFor %s, in %s. Review it with: %s", result.line,
+          result.scope, result.target, review), "Noted for review")
       else
         hs.pasteboard.setContents(remember)
         overlay.showPanel("Couldn't note that: " .. tostring(err) .. "\n\nWhat you said is on the clipboard.",

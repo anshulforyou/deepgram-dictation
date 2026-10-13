@@ -54,6 +54,18 @@ class DaysTest(Base):
         days = vm.pending_days(self.support, "2026-10-12", {"distilled": ["2026-10-10"]})
         self.assertEqual(days, ["2026-10-11"])
 
+    def test_prune_deletes_old_style_dictations_even_when_never_read(self):
+        for day in ("2026-08-01", "2026-10-01"):
+            jsonl(self.support / "style" / f"{day}.jsonl", [{"text": "x"}])
+        vm.prune(self.support, {}, "2026-10-12")
+        self.assertEqual([f.stem for f in (self.support / "style").glob("*.jsonl")], ["2026-10-01"])
+
+    def test_render_survives_damaged_lines(self):
+        text = vm.render([{"question": "q", "memory": "acme", "opened": [1], "fields": "x", "fill": "y",
+                           "answer_kind": "fill"}])
+        self.assertIn("asked: q", text)
+        self.assertEqual(vm.scope_for({"memory": "acme"}, []), "global")
+
     def test_prune_deletes_old_distilled_logs_only(self):
         for day in ("2026-08-01", "2026-08-02", "2026-10-01"):
             jsonl(self.support / "interactions" / f"{day}.jsonl", [{}])
@@ -124,6 +136,55 @@ class DistillTest(Base):
         self.assertIn("2000-01-01", vm.load_state(self.support)["distilled"])
 
 
+    def run_cli(self, *extra):
+        with mock.patch("sys.stdout"), mock.patch("sys.stderr"):
+            return vm.main(["--grandma-home", str(self.home), "--support", str(self.support), "--distill",
+                            "--claude", "claude", *extra])
+
+    def test_a_failed_sweater_is_retried_without_proposing_the_others_again(self):
+        jsonl(self.support / "interactions" / "2000-01-01.jsonl", [
+            {"question": "q1", "memory": ["acme"]}, {"question": "q2"}])
+        calls = []
+
+        def flaky(claude, prompt, **kw):
+            calls.append(prompt)
+            if 'scope="global"' in prompt and len(calls) == 2:
+                raise vm.meeting_organize.OrganizeError("Claude took too long to respond")
+            return "1. target: acme/facts.md\n   text: a fact"
+        with mock.patch.object(vm.meeting_organize, "run_claude_text", side_effect=flaky):
+            self.assertEqual(self.run_cli(), 1)
+            self.assertNotIn("2000-01-01", vm.load_state(self.support).get("distilled", []))
+            self.assertEqual(self.run_cli(), 0)
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn('scope="acme"', calls[2])
+        names = sorted(p.name for p in (self.home / "proposals").iterdir())
+        self.assertEqual(names, ["acme-voice-20000101.md", "global-voice-20000101.md"])
+        state = vm.load_state(self.support)
+        self.assertIn("2000-01-01", state["distilled"])
+        self.assertEqual(state["partial"], {})
+
+    def test_a_second_run_waits_for_the_first(self):
+        jsonl(self.support / "interactions" / "2000-01-01.jsonl", [{"question": "q"}])
+        with vm.locked(self.support) as only, \
+                mock.patch.object(vm.meeting_organize, "run_claude_text") as run:
+            self.assertTrue(only)
+            self.assertEqual(self.run_cli(), 0)
+        run.assert_not_called()
+        self.assertNotIn("distilled", vm.load_state(self.support))
+
+    def test_rejects_a_day_that_is_not_a_date(self):
+        self.assertEqual(self.run_cli("--day", "../../etc"), 1)
+
+    def test_never_quotes_a_flagged_dictation(self):
+        jsonl(self.support / "interactions" / "2026-10-11.jsonl", [
+            {"at": "2026-10-11T11:00:00", "kind": "flag", "raw": "tell Sam the Acme deal closes on the ninth",
+             "pasted": "Tell Sam the Acme deal closes on the ninth."}])
+        reply = "1. target: global/identity.md\n   text: The Acme deal closes on the ninth."
+        with mock.patch.object(vm.meeting_organize, "run_claude_text", return_value=reply), \
+                mock.patch("sys.stderr"):
+            self.assertEqual(vm.distill_day(self.home, self.support, "2026-10-11", "claude"), [])
+
+
 class RememberTest(Base):
     def reply(self, line, kind="fact"):
         return {"content": [{"type": "text", "text": json.dumps({"line": line, "kind": kind})}]}
@@ -169,6 +230,12 @@ class StyleTest(Base):
         self.assertEqual(vm.leaks("They often ask: can we move the pricing call to later", samples),
                          "can we move the pricing call")
         self.assertIsNone(vm.leaks("Opens with a greeting and asks to reschedule.", samples))
+
+    def test_leak_check_ignores_case_punctuation_and_curly_apostrophes(self):
+        samples = ["I don't think we can make Friday, José."]
+        self.assertEqual(vm.leaks("I DON\u2019T think: we can make it", samples), "i dont think we can make")
+        self.assertEqual(vm.leaks("we can make Friday jose", samples), None)
+        self.assertEqual(vm.leaks("think we can make friday josé", samples), "think we can make friday josé")
 
     def test_writes_a_global_proposal_and_clears_the_buffer(self):
         self.buffer(160)

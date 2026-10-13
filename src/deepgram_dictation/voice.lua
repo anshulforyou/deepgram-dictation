@@ -125,14 +125,29 @@ end
 -- "Grandma, remember ...": done({ scope, target, line, path }) or done(nil, err).
 function M.remember(text, done) run({ "--remember=" .. text }, done) end
 
--- Distills finished days, then checks whether style learning is due. One run at a time.
+-- Distills finished days (with learnFromVoice), then checks whether style learning is due
+-- (with learnStyle, which works on its own too). One run at a time.
 function M.tick()
-  if worker or not M.enabled() then return end
+  if worker or not (M.enabled() or M.styleEnabled()) then return end
   local path = claude()
   if not path then return log("the claude CLI wasn't found, so nothing is distilled") end
   local extra = { "--claude", path }
   if cfg.claudeModel then table.insert(extra, "--claude-model") table.insert(extra, cfg.claudeModel) end
   worker = true
+  local function style()
+    if not M.styleEnabled() then worker = nil return end
+    run({ "--style", table.unpack(extra) }, function(result, err)
+      worker = nil
+      if err then return log("style failed: %s", err) end
+      if result and result.path then
+        log("style proposal: %s", result.path)
+        -- global isn't a sweater, so `grandma review global` doesn't list it: plain review does.
+        hs.notify.new({ title = "Grandma learned how you write",
+                        informativeText = "A proposed change to your style notes. Run: grandma review" }):send()
+      end
+    end)
+  end
+  if not M.enabled() then return style() end
   run({ "--distill", table.unpack(extra) }, function(result, err)
     if err then log("distill failed: %s", err) end
     if result and #(result.proposals or {}) > 0 then
@@ -141,22 +156,13 @@ function M.tick()
         #result.proposals)
       hs.notify.new({ title = "Grandma learned something", informativeText = text }):send()
     end
-    if not M.styleEnabled() then worker = nil return end
-    run({ "--style", table.unpack(extra) }, function(style, styleErr)
-      worker = nil
-      if styleErr then return log("style failed: %s", styleErr) end
-      if style and style.path then
-        log("style proposal: %s", style.path)
-        hs.notify.new({ title = "Grandma learned how you write",
-                        informativeText = "A proposed change to your style notes. Run: grandma review global" }):send()
-      end
-    end)
+    style()
   end)
 end
 
 function M.setup(config)
   cfg = config
-  if not M.enabled() then return end
+  if not (M.enabled() or M.styleEnabled()) then return end
   firstTick = hs.timer.doAfter(90, M.tick) -- not during startup
   timer = hs.timer.doEvery(TICK_SECONDS, M.tick)
 end

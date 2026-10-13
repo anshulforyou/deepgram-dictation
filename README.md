@@ -235,12 +235,13 @@ or drop with `grandma review`, the same as grandma's own session proposals.
   read. `learnFromVoice = false` turns this off.
 - **"Grandma, remember ..."** With Fn+Control, start with "remember" (or "note that"): "remember
   that the product photos are in ~/Brand/photos". It skips the screen and is written as a proposal
-  right away, for the project or sweater you named, or global.
+  right away, for the project or sweater you named, or global. A question ("remember which tab had
+  the invoice?") is still asked about the screen.
 - **How you write (optional, `learnStyle = true`).** Dictations of 8 words or more are kept, with
   the app they went to, and after 150 of them (or 20 and a week) Claude reads them for how you
   write, never what about, and proposes changes to `global/style.md`. A proposal that repeats any 6
   words in a row from a dictation is refused, so nothing you dictated can be quoted into memory.
-  The dictations are deleted once read.
+  The dictations are deleted once read, or after 30 days if they never are.
 
 Plain dictation (Fn alone) is never read for facts: it's you writing to other people.
 
