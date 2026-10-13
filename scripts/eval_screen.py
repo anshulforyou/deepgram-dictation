@@ -27,7 +27,7 @@ REPO = Path(__file__).resolve().parent.parent
 SCREENS = REPO / "tests" / "screens"
 PROMPT = REPO / "src" / "deepgram_dictation" / "screen_prompt.txt"
 MAX_EDGE = 1920  # same as screen.lua
-JPEG_QUALITY = 75
+JPEG_QUALITY = 60
 
 SCHEMA = {
     "type": "object",
@@ -72,6 +72,8 @@ def parse_answer(resp):
     """Same as core.parseScreenAnswer: (kind, text), or (None, why)."""
     if resp.get("type") == "error":
         return None, f"api error: {resp.get('error', {}).get('message')}"
+    if resp.get("stop_reason") == "refusal":
+        return None, "Claude declined to answer"
     if resp.get("stop_reason") != "end_turn":
         return None, f"stopped: {resp.get('stop_reason')}"
     raw = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
@@ -81,7 +83,9 @@ def parse_answer(resp):
         value = json.loads(raw)
     except ValueError:
         return "answer", raw
-    if value.get("kind") in ("insert", "answer") and str(value.get("text", "")).strip():
+    if not isinstance(value, dict):
+        return "answer", raw
+    if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
         return value["kind"], value["text"].strip()
     return "answer", raw
 
@@ -134,7 +138,7 @@ def main(argv=None):
     if not cases:
         sys.exit("no cases")
     key = keychain(args.keychain_name)
-    system = PROMPT.read_text().strip()
+    system = PROMPT.read_text()
     images = {s: jpeg_base64(SCREENS / f"{s}.png") for s in {c["screen"] for c in cases}}
 
     with ThreadPoolExecutor(max_workers=6) as pool:

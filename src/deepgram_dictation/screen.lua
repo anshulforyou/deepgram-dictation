@@ -9,8 +9,11 @@ local M = {}
 
 local API_URL = "https://api.anthropic.com/v1/messages"
 local MODULE_DIR = hs.configdir .. "/deepgram_dictation"
-local MAX_EDGE = 1920 -- pixels on the long side: small text stays readable, the upload stays ~120 KB
-local JPEG_QUALITY = 75
+local MAX_EDGE = 1920 -- pixels on the long side: small text stays readable (100 to 450 KB a screen)
+local JPEG_QUALITY = 60
+local CAPTURE_TIMEOUT = 5 -- seconds; usually well under one
+local TMP_DIR = os.getenv("TMPDIR") or "/tmp/"
+local TMP_PREFIX = "deepgram-dictation-screen-"
 
 -- Captures a rectangle (in points) to a JPEG no wider than MAX_EDGE: screencapture, then sips.
 local CAPTURE = [[
@@ -30,8 +33,16 @@ local function getApiKey()
   return nil
 end
 
+-- Screenshots left behind by a reload or crash mid-capture.
+local function removeStaleCaptures()
+  for file in hs.fs.dir(TMP_DIR) do
+    if file:sub(1, #TMP_PREFIX) == TMP_PREFIX then os.remove(TMP_DIR .. "/" .. file) end
+  end
+end
+
 function M.setup(config)
   cfg = config
+  pcall(removeStaleCaptures)
   if not cfg.screenAssist then return end
   local f = io.open(MODULE_DIR .. "/screen_prompt.txt", "r")
   instructions = f and f:read("a")
@@ -52,21 +63,34 @@ function M.capture(done)
   local mode = screen:currentMode() or {}
   local pixels = math.max(frame.w, frame.h) * (mode.scale or 1)
   captureCount = captureCount + 1
-  local base = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation-screen-" .. captureCount
+  local base = TMP_DIR .. "/" .. TMP_PREFIX .. captureCount
   local png, jpg = base .. ".png", base .. ".jpg"
   local started = hs.timer.secondsSinceEpoch()
-  local rect = string.format("%d,%d,%d,%d", frame.x, frame.y, frame.w, frame.h)
-  local task = hs.task.new("/bin/sh", function(code, _, stderr)
+  local rect = string.format("%d,%d,%d,%d", math.floor(frame.x), math.floor(frame.y), math.floor(frame.w),
+    math.floor(frame.h))
+  local finished, timer, task = false, nil, nil
+  local function finish(shot, err)
+    if finished then return end
+    finished = true
+    if timer then timer:stop() end
+    os.remove(png)
+    os.remove(jpg)
+    done(shot, err)
+  end
+  timer = hs.timer.doAfter(CAPTURE_TIMEOUT, function()
+    if task and task:isRunning() then task:terminate() end
+    finish(nil, "timed out")
+  end)
+  task = hs.task.new("/bin/sh", function(code, _, stderr)
+    if finished then return end
     local f = code == 0 and io.open(jpg, "rb")
     local data = f and f:read("a")
     if f then f:close() end
-    os.remove(png)
-    os.remove(jpg)
-    if not data or #data == 0 then return done(nil, "screen capture failed: " .. tostring(stderr)) end
-    done({ data = hs.base64.encode(data), screen = screen,
-           ms = math.floor((hs.timer.secondsSinceEpoch() - started) * 1000 + 0.5) })
+    if not data or #data == 0 then return finish(nil, "screen capture failed: " .. tostring(stderr)) end
+    finish({ data = hs.base64.encode(data), screen = screen,
+             ms = math.floor((hs.timer.secondsSinceEpoch() - started) * 1000 + 0.5) })
   end, { "-c", CAPTURE, "sh", png, jpg, rect, tostring(JPEG_QUALITY), pixels > MAX_EDGE and tostring(MAX_EDGE) or "" })
-  if not task:start() then done(nil, "could not start screencapture") end
+  if not task:start() then finish(nil, "could not start screencapture") end
 end
 
 -- Asks Claude `question` about `shot`, then calls `done(answer, info)` exactly once. `answer` is

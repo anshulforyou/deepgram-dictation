@@ -35,6 +35,13 @@ class ParseAnswerTest(unittest.TestCase):
         self.assertEqual(ev.parse_answer(self.reply("Click Billing.")), ("answer", "Click Billing."))
         self.assertEqual(ev.parse_answer(self.reply('{"kind": "shout", "text": "x"}'))[0], "answer")
 
+    def test_non_object_json_is_still_an_answer(self):
+        self.assertEqual(ev.parse_answer(self.reply("[1, 2]")), ("answer", "[1, 2]"))
+        self.assertEqual(ev.parse_answer(self.reply('{"kind": "insert", "text": 3}'))[0], "answer")
+
+    def test_refusal(self):
+        self.assertEqual(ev.parse_answer(self.reply("", "refusal")), (None, "Claude declined to answer"))
+
     def test_reports_stops(self):
         self.assertEqual(ev.parse_answer(self.reply("{", "max_tokens")), (None, "stopped: max_tokens"))
 

@@ -104,13 +104,18 @@ local function endGlow(s)
   if session == s or not (session and session.asked) then overlay.hideGlow() end
 end
 
+-- Clears the badge once `s` is done, unless a newer dictation or question is still showing its own.
+local function clearBadge(s)
+  if not recorder and (session == s or not session or not session.asked) then setIndicator(nil) end
+end
+
 -- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
 -- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
 -- she can't answer, so nothing said is lost.
 local function answerScreen(raw, recording, record, s)
   local function finish(answer, info)
     endGlow(s)
-    if not recorder then setIndicator(nil) end
+    clearBadge(s)
     if answer and answer.kind == "insert" then
       pasteText(answer.text)
     elseif answer then
@@ -137,6 +142,16 @@ end
 local function deliver(raw, dict, via, moved, s)
   local recording, record = takeRecording(via, moved)
   record.raw = raw
+  if s and s.copyOnly then
+    -- A question retried from the menu: its screenshot is gone, so it can't be asked again.
+    record.via = via .. "+screen"
+    clearBadge(s)
+    if raw ~= "" then
+      hs.pasteboard.setContents(raw)
+      hs.alert.show("Your question is on the clipboard. Ask again with Fn+Control to send the screen.", 3)
+    end
+    return history.save(recording, record)
+  end
   if s and s.asked then
     record.via = via .. "+screen"
     if raw == "" then
@@ -149,7 +164,7 @@ local function deliver(raw, dict, via, moved, s)
   local names = cleanup.namesFor(dict)
   cleanup.run(raw, names, function(text, info)
     local pasted = core.applyReplacements(text, dict.replacements)
-    if not recorder then setIndicator(nil) end -- keep the badge of a dictation started meanwhile
+    clearBadge(s) -- keeps the badge of a dictation started meanwhile
     pasteText(pasted)
     record.cleanup = info
     record.cleaned = info.status == "ok" and text or nil
@@ -160,16 +175,16 @@ end
 
 -- Deepgram couldn't be reached at all. The recording is kept in the dictation history, so
 -- nothing said is lost: "Retry last dictation" in the menu transcribes it again.
-local function keepFailed(reason, recording)
+local function keepFailed(reason, recording, s)
   setIndicator(nil)
-  overlay.hideGlow()
+  if s then endGlow(s) end
   log("transcription failed: %s", reason)
   if not history.enabled() then
     os.remove(recording)
     hs.alert.show("Deepgram error, see Hammerspoon console")
     return
   end
-  local _, record = takeRecording("upload", recording)
+  local _, record = takeRecording(s and (s.asked or s.copyOnly) and "upload+screen" or "upload", recording)
   record.error = reason
   history.save(recording, record)
   hs.alert.show("Couldn't reach Deepgram. The recording is saved:\n🎙 menu → Retry last dictation", 5)
@@ -179,6 +194,7 @@ local function transcribe(label, s)
   local key = getApiKey()
   if not key then
     setIndicator(nil)
+    if s then endGlow(s) end
     hs.alert.show("Deepgram API key not found in Keychain ('" .. cfg.keychainName .. "')")
     return
   end
@@ -186,7 +202,7 @@ local function transcribe(label, s)
   local f = io.open(recording, "rb")
   if not f then
     setIndicator(nil)
-    overlay.hideGlow()
+    if s then endGlow(s) end
     return
   end
   local audio = f:read("a")
@@ -201,11 +217,11 @@ local function transcribe(label, s)
   }, function(status, body)
     if status ~= 200 then
       if status == 401 or status == 403 then apiKey = nil end
-      return keepFailed("HTTP " .. tostring(status) .. ": " .. tostring(body), recording)
+      return keepFailed("HTTP " .. tostring(status) .. ": " .. tostring(body), recording, s)
     end
     local ok, resp = pcall(hs.json.decode, body)
     local text, err = core.extractTranscript(ok and resp or nil)
-    if not text then return keepFailed("bad response: " .. tostring(err), recording) end
+    if not text then return keepFailed("bad response: " .. tostring(err), recording, s) end
     if text == "" then
       setIndicator(nil)
       hs.alert.show("No speech detected", 1)
@@ -333,7 +349,7 @@ local function startStreaming()
 end
 
 local function startRecording()
-  overlay.closePanel()
+  overlay.closePanel(0) -- at once: with Control already down, the screen is captured next
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
   session = {}
@@ -407,6 +423,7 @@ local function askScreen(s)
     return
   end
   setIndicator(nil, nil, 0)
+  overlay.hideGlow(0) -- an older question's glow mustn't end up in this screenshot
   screen.capture(function(shot, err)
     if err then
       log("%s", err)
@@ -453,7 +470,7 @@ local function buildMenu()
       hs.alert.show(record and "Flagged. Find it in the dictation history." or "No saved dictation yet", 2)
     end })
     table.insert(items, { title = "Retry last dictation", fn = function()
-      local wav = history.lastAudio()
+      local wav, last = history.lastAudio()
       if not wav or recorder then
         hs.alert.show(wav and "Finish the current dictation first" or "No saved recording to retry", 2)
         return
@@ -463,7 +480,9 @@ local function buildMenu()
       if src then src:close() end
       if dst then dst:close() end
       startedAt, releasedAt, micReadyAt = nil, nil, nil
-      transcribe()
+      -- A failed screen question comes back to the clipboard, never pasted as dictation.
+      local via = last and tostring(last.via) or ""
+      transcribe(nil, via:find("+screen", 1, true) and { copyOnly = true } or nil)
     end })
     table.insert(items, { title = "Open dictation history", fn = function()
       hs.fs.mkdir(history.dir())

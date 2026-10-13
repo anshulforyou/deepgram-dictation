@@ -114,12 +114,12 @@ local function textHeight(c, text, width, isError)
   return math.ceil(lines * (lineH + LINE_SPACING)) + 4
 end
 
-function M.closePanel()
+function M.closePanel(fade)
   if panelKeys then panelKeys:stop() panelKeys = nil end
   if panel then
     local c = panel
     panel = nil
-    c:hide(0.15)
+    c:hide(fade or 0.15)
     hs.timer.doAfter(0.3, function() c:delete() end)
   end
 end
