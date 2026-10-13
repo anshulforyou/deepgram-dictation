@@ -441,13 +441,27 @@ end
 
 -- What grandma returns for a screen question: text to paste where the user is typing, or an
 -- answer to show them.
+-- answer, or fields grandma will fill in on screen once the user confirms.
 core.SCREEN_SCHEMA = {
   type = "object",
   properties = {
-    kind = { type = "string", enum = { "insert", "answer" } },
+    kind = { type = "string", enum = { "insert", "answer", "fill" } },
     text = { type = "string" },
+    fields = {
+      type = "array",
+      items = {
+        type = "object",
+        properties = {
+          label = { type = "string" },
+          value = { type = "string" },
+          skip = { type = "boolean" },
+        },
+        required = { "label", "value", "skip" },
+        additionalProperties = false,
+      },
+    },
   },
-  required = { "kind", "text" },
+  required = { "kind", "text", "fields" },
   additionalProperties = false,
 }
 
@@ -548,11 +562,173 @@ function core.parseScreenAnswer(resp, decode)
   local raw = table.concat(parts):match("^%s*(.-)%s*$")
   if raw == "" then return nil, "empty answer" end
   local ok, value = pcall(decode, raw)
+  if ok and type(value) == "table" and value.kind == "fill" then
+    local fields = core.fillFields(value.fields)
+    if #fields > 0 then
+      return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
+               fields = fields }
+    end
+  end
   if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
       and type(value.text) == "string" and value.text:match("%S") then
     return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$") }
   end
   return { kind = "answer", text = raw }
+end
+
+-- The well-formed fields of a fill plan: { { label, value, skip } }. A field with no value is
+-- always skipped.
+function core.fillFields(list)
+  local out = {}
+  for _, f in ipairs(type(list) == "table" and list or {}) do
+    if type(f) == "table" and type(f.label) == "string" and f.label:match("%S") then
+      local value = type(f.value) == "string" and f.value or ""
+      table.insert(out, { label = f.label:match("^%s*(.-)%s*$"), value = value,
+                          skip = f.skip == true or not value:match("%S") })
+    end
+  end
+  return out
+end
+
+-- Filling a form on screen with Claude's computer-use toolset ---------------------------------
+
+-- The toolset members grandma may use. Everything else is switched off in the request and
+-- refused here too: no right or middle clicks, drags, raw mouse buttons or held keys.
+core.FILL_ACTIONS = {
+  screenshot = true, zoom = true, left_click = true, triple_click = true, type = true, key = true,
+  scroll = true, wait = true, cursor_position = true,
+}
+core.FILL_DISABLED = {
+  "right_click", "middle_click", "double_click", "left_click_drag", "mouse_move", "left_mouse_down",
+  "left_mouse_up", "hold_key",
+}
+-- Keys she may press. Return and Enter are left out on purpose: they submit forms.
+core.FILL_KEYS = {
+  tab = true, ["shift+tab"] = true, backspace = true, delete = true, up = true, down = true,
+  left = true, right = true, escape = true, ["cmd+a"] = true, space = true,
+}
+core.FILL_MAX_ACTIONS = 40
+core.FILL_MAX_SECONDS = 90
+-- Sonnet 5.5's limits for an image in a tool result.
+core.FILL_MAX_EDGE = 2576
+core.FILL_MAX_PIXELS = 3600000
+
+function core.fillToolset()
+  local configs = {}
+  for _, name in ipairs(core.FILL_DISABLED) do configs[name] = { enabled = false } end
+  return { type = "computer_toolset_20260801", configs = configs }
+end
+
+-- Scale from screen points to screenshot pixels: 1 unless the screen is too big to send whole.
+function core.fillScale(w, h)
+  return math.min(1, core.FILL_MAX_EDGE / math.max(w, h), math.sqrt(core.FILL_MAX_PIXELS / (w * h)))
+end
+
+-- A screenshot coordinate as a global screen point, for a display with `frame` (points).
+function core.fillPoint(coordinate, frame, scale)
+  if type(coordinate) ~= "table" or type(coordinate[1]) ~= "number" or type(coordinate[2]) ~= "number" then
+    return nil
+  end
+  local x, y = coordinate[1] / scale, coordinate[2] / scale
+  if x < 0 or y < 0 or x > frame.w or y > frame.h then return nil end
+  return { x = frame.x + x, y = frame.y + y }
+end
+
+-- "shift+tab" as Hammerspoon mods and key: { "shift" }, "tab".
+function core.fillKey(text)
+  local parts = {}
+  for part in tostring(text):lower():gmatch("[^+]+") do table.insert(parts, (part:gsub("%s", ""))) end
+  local key = table.remove(parts)
+  local mods = {}
+  for _, m in ipairs(parts) do table.insert(mods, (m == "super" or m == "command") and "cmd" or m) end
+  return mods, key
+end
+
+-- Whether grandma may run this computer action, given the plan the user confirmed. Returns true,
+-- or false and why. Typing is limited to the confirmed values, so nothing on screen can make her
+-- type anything else.
+function core.checkFillAction(name, input, fields)
+  if not core.FILL_ACTIONS[name] then return false, name .. " isn't allowed while filling" end
+  input = type(input) == "table" and input or {}
+  if name == "type" then
+    local text = type(input.text) == "string" and input.text or ""
+    for _, f in ipairs(fields or {}) do
+      if not f.skip and f.value == text then return true end
+    end
+    return false, "only the values the user confirmed can be typed"
+  end
+  if name == "key" then
+    local mods, key = core.fillKey(input.text)
+    local combo = (#mods > 0 and (table.concat(mods, "+") .. "+") or "") .. tostring(key)
+    if not core.FILL_KEYS[combo] then return false, "the " .. tostring(input.text) .. " key isn't allowed" end
+    if input["repeat"] ~= nil and (type(input["repeat"]) ~= "number" or input["repeat"] > 30) then
+      return false, "too many repeats"
+    end
+  end
+  return true
+end
+
+-- Accessibility roles grandma may click. Buttons, links, checkboxes (consent) and menu items
+-- are refused, so she can't save, submit, delete, publish or agree to anything. A menu item is
+-- allowed only in a menu she just opened from a pop-up or combo box (choosing an option).
+core.FILL_CLICK_ROLES = {
+  AXTextField = true, AXTextArea = true, AXComboBox = true, AXPopUpButton = true, AXSearchField = true,
+  AXRadioButton = true,
+}
+
+function core.fillClickAllowed(role, subrole, menuOpen)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  if core.FILL_CLICK_ROLES[role] then return true end
+  if role == "AXMenuItem" and menuOpen then return true end
+  return false, "clicking " .. tostring(role or "an unknown element") .. " isn't allowed"
+end
+
+-- A tool_result for a computer action (every one must name the toolset).
+function core.fillResult(id, content, isError)
+  return { type = "tool_result", tool_use_id = id, toolset_name = "computer", content = content,
+           is_error = isError or nil }
+end
+
+function core.fillImage(id, data)
+  return core.fillResult(id, {
+    { type = "image", source = { type = "base64", media_type = "image/jpeg", data = data } },
+  })
+end
+
+-- The computer actions in a response: { { id, name, input } } (blocks of other tools are ignored).
+function core.fillActions(resp)
+  local out = {}
+  for _, block in ipairs(type(resp) == "table" and type(resp.content) == "table" and resp.content or {}) do
+    if type(block) == "table" and block.type == "tool_use" and block.toolset_name == "computer" then
+      local input = type(block.input) == "table" and block.input or {}
+      table.insert(out, { id = block.id, name = block.name, input = input })
+    end
+  end
+  return out
+end
+
+-- The confirmed plan as the user message that starts the fill.
+function core.fillPlanText(fields)
+  local lines = { "Fill in these fields on screen. Type each value exactly as written:" }
+  for _, f in ipairs(fields) do
+    if not f.skip then table.insert(lines, string.format("- %s: %s", f.label, f.value)) end
+  end
+  return table.concat(lines, "\n")
+end
+
+function core.fillRequest(cfg, systemPrompt, fields, image)
+  return {
+    model = cfg.screenModel,
+    max_tokens = 4096,
+    thinking = { type = "adaptive" },
+    output_config = { effort = cfg.screenEffort },
+    system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
+    tools = { core.fillToolset() },
+    messages = { { role = "user", content = {
+      { type = "text", text = core.fillPlanText(fields) },
+      { type = "image", source = { type = "base64", media_type = "image/jpeg", data = image } },
+    } } },
+  }
 end
 
 -- Top-left corner for a `w` x `h` panel near `point`, kept inside `frame` with a margin.

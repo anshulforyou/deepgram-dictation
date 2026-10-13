@@ -12,6 +12,7 @@ local cleanup = require("deepgram_dictation.cleanup")
 local history = require("deepgram_dictation.history")
 local screen = require("deepgram_dictation.screen")
 local overlay = require("deepgram_dictation.screen_overlay")
+local screenFill = require("deepgram_dictation.screen_fill")
 
 local M = { core = core, meeting = meeting }
 
@@ -112,10 +113,61 @@ end
 -- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
 -- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
 -- she can't answer, so nothing said is lost.
+-- The fill plan as the user sees it before saying yes.
+local function planText(answer)
+  local lines = { answer.text ~= "" and answer.text or "Grandma will fill in:", "" }
+  for _, f in ipairs(answer.fields) do
+    table.insert(lines, f.skip and string.format("%s: not in your memory, will skip", f.label)
+      or string.format("%s: %s", f.label, f.value))
+  end
+  table.insert(lines, "")
+  table.insert(lines, "Return to fill it in, Esc to cancel. She never clicks Save or Submit.")
+  return table.concat(lines, "\n")
+end
+
+-- The user said yes to a fill plan: grandma fills the form on the screen she looked at.
+local function fillForm(answer, s, recording, record)
+  local scr = s.shot.screen
+  overlay.showGlow(scr)
+  setIndicator("🧶 Grandma is filling… Esc to stop", GRANDMA_BADGE)
+  screenFill.run(answer.fields, scr, function(n)
+    if recorder then return end
+    setIndicator(string.format("🧶 Grandma is filling (step %d)… Esc to stop", n), GRANDMA_BADGE)
+  end, function(summary, info)
+    overlay.hideGlow()
+    if not recorder then setIndicator(nil) end
+    if info.status == "done" then
+      overlay.showPanel(summary, "Filled. Check it, then save")
+    else
+      overlay.showPanel((info.status == "stopped" and "Stopped: " or "Couldn't fill it: ") .. tostring(info.reason)
+        .. ". Anything already typed is still there.", info.status == "stopped" and "Stopped" or "Couldn't fill", true)
+    end
+    record.screen.fill = { status = info.status, reason = info.reason, ms = info.ms, actions = info.actions,
+                           summary = summary }
+    history.save(recording, record)
+  end)
+end
+
 local function answerScreen(raw, recording, record, s)
   local function finish(answer, info)
     endGlow(s)
     clearBadge(s)
+    record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
+                      kind = answer and answer.kind, answer = answer and answer.text,
+                      fields = answer and answer.fields, memory = info.memory, opened = info.opened }
+    if answer and answer.kind == "fill" then
+      -- Nothing is touched until the user has seen the plan and said yes.
+      return overlay.showPanel(planText(answer), "Fill this form?", false, {
+        onReturn = function()
+          record.screen.confirmed = true
+          fillForm(answer, s, recording, record)
+        end,
+        onEscape = function()
+          record.screen.confirmed = false
+          history.save(recording, record)
+        end,
+      })
+    end
     if answer and answer.kind == "insert" then
       pasteText(answer.text)
     elseif answer then
@@ -125,9 +177,6 @@ local function answerScreen(raw, recording, record, s)
       hs.pasteboard.setContents(raw)
       overlay.showPanel(tostring(info.reason) .. "\n\nYour question is on the clipboard.", "Couldn't answer", true)
     end
-    record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
-                      kind = answer and answer.kind, answer = answer and answer.text,
-                      memory = info.memory, opened = info.opened }
     history.save(recording, record)
   end
   if s.error then return finish(nil, { status = "error", reason = s.error }) end
@@ -350,6 +399,7 @@ local function startStreaming()
 end
 
 local function startRecording()
+  screenFill.stop("you started a dictation")
   overlay.closePanel(0) -- at once: with Control already down, the screen is captured next
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
@@ -542,6 +592,7 @@ function M.start(overrides)
   cleanup.setup(cfg)
   history.setup(cfg)
   screen.setup(cfg)
+  screenFill.setup(cfg)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
@@ -562,6 +613,7 @@ function M.stop()
   if tailTimer then tailTimer:stop() tailTimer = nil end
   if slowTimer then slowTimer:stop() slowTimer = nil end
   dropStandby()
+  screenFill.stop("Hammerspoon reloaded")
   overlay.teardown()
   screen.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end

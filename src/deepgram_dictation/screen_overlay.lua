@@ -20,7 +20,7 @@ local THREAD_SPEED = 420 -- points per second
 local BREATH_SECONDS = 1.8
 local HAZE_LAYERS, HAZE_WIDTH, HAZE_ALPHA = 18, 90, 0.04 -- the glow reaches HAZE_WIDTH / 2 into the screen
 
-local glow, glowTimer, panel, panelKeys
+local glow, glowTimer, panel, panelKeys, pendingCancel
 
 -- Glow ---------------------------------------------------------------------------------------
 
@@ -116,17 +116,23 @@ end
 
 function M.closePanel(fade)
   if panelKeys then panelKeys:stop() panelKeys = nil end
+  -- A question closed any other way (the next dictation starting) counts as Esc.
+  local cancel = pendingCancel
+  pendingCancel = nil
   if panel then
     local c = panel
     panel = nil
     c:hide(fade or 0.15)
     hs.timer.doAfter(0.3, function() c:delete() end)
   end
+  if cancel then cancel() end
 end
 
 -- Shows `text` next to the mouse, on whichever display it is on now. `note` is the small line in
 -- the header ("Copied"). Closes on a click on the panel, on Esc, or when the next dictation starts.
-function M.showPanel(text, note, isError)
+-- With `keys` ({ onReturn, onEscape }) it asks: Return and Esc are answered here and never reach
+-- the app underneath (so Return can't submit a form), and a click counts as Esc.
+function M.showPanel(text, note, isError, keys)
   M.closePanel()
   local frame = (hs.mouse.getCurrentScreen() or hs.screen.mainScreen()):frame()
   local body = styled(text, BODY_SIZE, isError and M.ROSE_LIGHT or PANEL_TEXT)
@@ -150,11 +156,27 @@ function M.showPanel(text, note, isError)
   })
   c:level(hs.canvas.windowLevels.floating)
   c:behavior({ "canJoinAllSpaces" })
-  c:mouseCallback(function(_, message) if message == "mouseUp" then M.closePanel() end end)
+  pendingCancel = keys and keys.onEscape
+  local function answer(fn)
+    pendingCancel = nil
+    M.closePanel(0)
+    if fn then fn() end
+  end
+  c:mouseCallback(function(_, message)
+    if message == "mouseUp" then answer(keys and keys.onEscape) end
+  end)
   c:show(0.15)
   panel = c
   panelKeys = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
-    if e:getKeyCode() == hs.keycodes.map.escape then M.closePanel() end
+    local code = e:getKeyCode()
+    if code == hs.keycodes.map.escape then
+      answer(keys and keys.onEscape)
+      return keys ~= nil
+    end
+    if keys and (code == hs.keycodes.map["return"] or code == hs.keycodes.map.padenter) then
+      answer(keys.onReturn)
+      return true
+    end
     return false
   end):start()
 end

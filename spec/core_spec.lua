@@ -676,7 +676,7 @@ describe("screen questions", function()
 
     it("asks for the answer in a fixed shape", function()
       assert.are.equal("json_schema", body.output_config.format.type)
-      assert.are.same({ "insert", "answer" }, body.output_config.format.schema.properties.kind.enum)
+      assert.are.same({ "insert", "answer", "fill" }, body.output_config.format.schema.properties.kind.enum)
       assert.are.equal("low", body.output_config.effort)
     end)
 
@@ -808,3 +808,153 @@ describe("screen questions", function()
     end)
   end)
 end)
+
+describe("filling a form", function()
+  local fields = {
+    { label = "Title", value = "Nowhere Suit", skip = false },
+    { label = "Price", value = "", skip = true },
+  }
+
+  describe("parseScreenAnswer with a fill plan", function()
+    local plan = '{"kind":"fill","text":"2 fields","fields":[...]}'
+    local function decode(s)
+      if s == plan then
+        return { kind = "fill", text = " 2 fields ", fields = {
+          { label = " Title ", value = "Nowhere Suit", skip = false },
+          { label = "Price", value = "  ", skip = false },
+          { label = "", value = "x", skip = false },
+          "junk",
+        } }
+      end
+      if s == "empty" then return { kind = "fill", text = "x", fields = {} } end
+      error("not json")
+    end
+    local function reply(text) return { stop_reason = "end_turn", content = { { type = "text", text = text } } } end
+
+    it("keeps well-formed fields and skips ones without a value", function()
+      assert.are.same({ kind = "fill", text = "2 fields", fields = {
+        { label = "Title", value = "Nowhere Suit", skip = false },
+        { label = "Price", value = "  ", skip = true },
+      } }, core.parseScreenAnswer(reply(plan), decode))
+    end)
+
+    it("shows a plan with no fields as an answer", function()
+      assert.are.equal("answer", core.parseScreenAnswer(reply("empty"), decode).kind)
+    end)
+  end)
+
+  describe("checkFillAction", function()
+    it("types only the values the user confirmed", function()
+      assert.is_true(core.checkFillAction("type", { text = "Nowhere Suit" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "Nowhere Suit\n" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "my password" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "" }, fields), "a skipped field's empty value")
+    end)
+
+    it("never presses Return or shortcuts, but can move between fields", function()
+      assert.is_true(core.checkFillAction("key", { text = "Tab" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "shift+tab" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "cmd+a" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "super+a" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "Return" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "KP_Enter" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "cmd+w" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "backspace", ["repeat"] = 99 }, fields))
+    end)
+
+    it("refuses actions that are switched off", function()
+      for _, name in ipairs({ "right_click", "left_click_drag", "hold_key", "left_mouse_down", "made_up" }) do
+        assert.is_false(core.checkFillAction(name, {}, fields), name)
+      end
+      assert.is_true(core.checkFillAction("left_click", { coordinate = { 1, 2 } }, fields))
+      assert.is_true(core.checkFillAction("screenshot", {}, fields))
+    end)
+  end)
+
+  describe("fillClickAllowed", function()
+    it("clicks fields and pop-ups but never buttons, links or checkboxes", function()
+      assert.is_true(core.fillClickAllowed("AXTextField"))
+      assert.is_true(core.fillClickAllowed("AXPopUpButton"))
+      for _, role in ipairs({ "AXButton", "AXLink", "AXCheckBox", "AXMenuItem", "AXGroup" }) do
+        assert.is_false(core.fillClickAllowed(role), role)
+      end
+      assert.is_false(core.fillClickAllowed(nil))
+    end)
+
+    it("chooses an option only in a menu she opened", function()
+      assert.is_true(core.fillClickAllowed("AXMenuItem", nil, true))
+    end)
+
+    it("never touches a password field", function()
+      assert.is_false(core.fillClickAllowed("AXTextField", "AXSecureTextField"))
+    end)
+  end)
+
+  describe("coordinates", function()
+    it("maps screenshot pixels to points on the right display", function()
+      local frame = { x = -1920, y = -233, w = 1920, h = 1080 }
+      assert.are.same({ x = -1820, y = -33 }, core.fillPoint({ 100, 200 }, frame, 1))
+      assert.are.same({ x = 200, y = 400 }, core.fillPoint({ 100, 200 }, { x = 0, y = 0, w = 3440, h = 1440 }, 0.5))
+    end)
+
+    it("refuses points outside the display or malformed ones", function()
+      local frame = { x = 0, y = 0, w = 100, h = 100 }
+      assert.is_nil(core.fillPoint({ 101, 5 }, frame, 1))
+      assert.is_nil(core.fillPoint({ -1, 5 }, frame, 1))
+      assert.is_nil(core.fillPoint({ "a", 5 }, frame, 1))
+      assert.is_nil(core.fillPoint(nil, frame, 1))
+    end)
+
+    it("scales screens down only when they are too big to send", function()
+      assert.are.equal(1, core.fillScale(1920, 1080))
+      assert.are.equal(1, core.fillScale(1512, 982))
+      local scale = core.fillScale(5120, 2880)
+      assert.is_true(5120 * scale <= core.FILL_MAX_EDGE)
+      assert.is_true(5120 * scale * 2880 * scale <= core.FILL_MAX_PIXELS + 1)
+    end)
+  end)
+
+  describe("requests and results", function()
+    local body = core.fillRequest(core.mergeConfig(), "FILL PROMPT", fields, "IMG")
+
+    it("uses the computer toolset with the risky actions switched off", function()
+      local toolset = body.tools[1]
+      assert.are.equal("computer_toolset_20260801", toolset.type)
+      assert.is_nil(toolset.name)
+      for _, name in ipairs(core.FILL_DISABLED) do assert.is_false(toolset.configs[name].enabled, name) end
+      assert.is_nil(toolset.configs.left_click)
+    end)
+
+    it("starts from the confirmed plan and a screenshot, leaving out skipped fields", function()
+      local content = body.messages[1].content
+      assert.truthy(content[1].text:find("- Title: Nowhere Suit", 1, true))
+      assert.is_nil(content[1].text:find("Price", 1, true))
+      assert.are.equal("IMG", content[2].source.data)
+    end)
+
+    it("names the toolset on every result", function()
+      assert.are.same({ type = "tool_result", tool_use_id = "t1", toolset_name = "computer", content = "OK" },
+        core.fillResult("t1", "OK"))
+      assert.is_true(core.fillResult("t1", "no", true).is_error)
+      assert.are.equal("image", core.fillImage("t2", "DATA").content[1].type)
+    end)
+
+    it("reads the computer actions out of a response", function()
+      local resp = { content = {
+        { type = "thinking", thinking = "" },
+        { type = "tool_use", id = "a", name = "left_click", toolset_name = "computer",
+          input = { coordinate = { 1, 2 } } },
+        { type = "tool_use", id = "b", name = "open_memory", input = {} },
+        { type = "tool_use", id = "c", name = "screenshot", toolset_name = "computer" },
+      } }
+      assert.are.same({ { id = "a", name = "left_click", input = { coordinate = { 1, 2 } } },
+                        { id = "c", name = "screenshot", input = {} } }, core.fillActions(resp))
+    end)
+
+    it("parses keys", function()
+      assert.are.same({ { "shift" }, "tab" }, { core.fillKey("Shift+Tab") })
+      assert.are.same({ { "cmd" }, "a" }, { core.fillKey("super+a") })
+    end)
+  end)
+end)
+

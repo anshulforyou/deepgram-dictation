@@ -40,10 +40,17 @@ PROMPT = REPO / "src" / "deepgram_dictation" / "screen_prompt.txt"
 MAX_EDGE = 1920  # same as screen.lua
 JPEG_QUALITY = 60
 
-SCHEMA = {
+SCHEMA = {  # same as core.SCREEN_SCHEMA
     "type": "object",
-    "properties": {"kind": {"type": "string", "enum": ["insert", "answer"]}, "text": {"type": "string"}},
-    "required": ["kind", "text"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["insert", "answer", "fill"]},
+        "text": {"type": "string"},
+        "fields": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"label": {"type": "string"}, "value": {"type": "string"}, "skip": {"type": "boolean"}},
+            "required": ["label", "value", "skip"], "additionalProperties": False}},
+    },
+    "required": ["kind", "text", "fields"],
     "additionalProperties": False,
 }
 
@@ -127,7 +134,8 @@ def memory_results(resp, opens, home, sent_chars=0):
 
 
 def parse_answer(resp):
-    """Same as core.parseScreenAnswer: (kind, text), or (None, why)."""
+    """Same as core.parseScreenAnswer: (kind, text), or (None, why). A fill plan's text is one
+    "label: value" line per field, with "[skip]" for a field it won't fill."""
     if resp.get("type") == "error":
         return None, f"api error: {resp.get('error', {}).get('message')}"
     if resp.get("stop_reason") == "refusal":
@@ -143,6 +151,15 @@ def parse_answer(resp):
         return "answer", raw
     if not isinstance(value, dict):
         return "answer", raw
+    if value.get("kind") == "fill":
+        lines = []
+        for f in value.get("fields") or []:
+            if isinstance(f, dict) and isinstance(f.get("label"), str) and f["label"].strip():
+                v = f.get("value") if isinstance(f.get("value"), str) else ""
+                skip = f.get("skip") is True or not v.strip()
+                lines.append(f"{f['label'].strip()}: {'[skip]' if skip else v}")
+        if lines:
+            return "fill", "\n".join(lines)
     if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
         return value["kind"], value["text"].strip()
     return "answer", raw
@@ -165,6 +182,21 @@ def grade(case, kind, text, used=None):
     for word in case.get("exclude", []):
         if word.lower() in lower:
             problems.append(f"contains {word!r}")
+    if kind == "fill":
+        plan = {}
+        for line in text.splitlines():
+            label, _, value = line.partition(": ")
+            plan[label.strip().lower()] = value
+        def field(label):
+            return next((v for k, v in plan.items() if label.lower() in k), None)
+        for label, options in case.get("fill", {}).items():
+            value = field(label)
+            if value is None or value == "[skip]" or not any(o.lower() in value.lower() for o in options):
+                problems.append(f"{label} is {value!r}, expected one of {options}")
+        for label in case.get("skip", []):
+            value = field(label)
+            if value not in (None, "[skip]"):
+                problems.append(f"{label} was filled with {value!r} but the memory has no value for it")
     if case.get("check") == "password":
         if len(text.strip()) < 10 or not any(c.isdigit() for c in text):
             problems.append("password would not pass the form's rules")

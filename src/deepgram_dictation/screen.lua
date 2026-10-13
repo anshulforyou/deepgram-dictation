@@ -21,10 +21,11 @@ local MAX_OPENS = 1
 local MEMORY_CHARS = 240000 -- memory per question in all, as in grandma_context.py
 local MIN_OPEN_CHARS = 20000 -- an opened item always gets at least this much
 
--- Captures a rectangle (in points) to a JPEG no wider than MAX_EDGE: screencapture, then sips.
+-- Captures a rectangle (in points) to a JPEG: screencapture, then sips, either no bigger than $5
+-- on the long side or exactly $7 x $6 pixels (filling needs exact sizes to map clicks).
 local CAPTURE = [[
 /usr/sbin/screencapture -x -t png -R "$3" "$1" && \
-/usr/bin/sips -s format jpeg -s formatOptions "$4" ${5:+-Z "$5"} "$1" --out "$2" >/dev/null && \
+/usr/bin/sips -s format jpeg -s formatOptions "$4" ${5:+-Z "$5"} ${6:+-z "$6" "$7"} "$1" --out "$2" >/dev/null && \
 rm -f "$1"
 ]]
 
@@ -64,16 +65,24 @@ function M.enabled() return cfg and cfg.screenAssist and instructions ~= nil end
 
 function M.teardown() memory.teardown() end
 
+-- The Anthropic key from the Keychain, or nil (shared with screen_fill.lua).
+function M.apiKey() return getApiKey() end
+
 -- Whether Hammerspoon may record the screen. Asking shows macOS's permission prompt once.
 function M.permitted(ask) return hs.screenRecordingState(ask == true) end
 
 -- Captures the display under the mouse in the background, then calls
 -- `done(shot, err)` with shot = { data = base64 JPEG, screen = hs.screen, ms }.
-function M.capture(done)
-  local screen = hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
-  local frame = screen:fullFrame()
+--
+-- `opts` (optional, for filling): { screen = hs.screen, rect = {x, y, w, h} in points (default the
+-- whole display), size = {w, h} exact pixels }.
+function M.capture(done, opts)
+  opts = opts or {}
+  local screen = opts.screen or hs.mouse.getCurrentScreen() or hs.screen.mainScreen()
+  local frame = opts.rect or screen:fullFrame()
   local mode = screen:currentMode() or {}
   local pixels = math.max(frame.w, frame.h) * (mode.scale or 1)
+  local maxEdge = not opts.size and pixels > MAX_EDGE and tostring(MAX_EDGE) or ""
   captureCount = captureCount + 1
   local base = TMP_DIR .. "/" .. TMP_PREFIX .. captureCount
   local png, jpg = base .. ".png", base .. ".jpg"
@@ -102,7 +111,8 @@ function M.capture(done)
     if not data or #data == 0 then return finish(nil, "screen capture failed: " .. tostring(stderr)) end
     finish({ data = hs.base64.encode(data), screen = screen,
              ms = math.floor((hs.timer.secondsSinceEpoch() - started) * 1000 + 0.5) })
-  end, { "-c", CAPTURE, "sh", png, jpg, rect, tostring(JPEG_QUALITY), pixels > MAX_EDGE and tostring(MAX_EDGE) or "" })
+  end, { "-c", CAPTURE, "sh", png, jpg, rect, tostring(JPEG_QUALITY), maxEdge,
+         opts.size and tostring(math.floor(opts.size.h)) or "", opts.size and tostring(math.floor(opts.size.w)) or "" })
   capturing[task] = true
   if not task:start() then finish(nil, "could not start screencapture") end
 end

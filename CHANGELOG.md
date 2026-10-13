@@ -28,6 +28,10 @@ All notable changes to this project are documented here. The format follows
 - Screen questions know you (with `grandmaHome`): a compact profile generated from your global
   memory goes with every question, a sweater or project you name goes with it, and grandma can
   open one herself when the screen is about it.
+- Grandma fills in forms: ask her to fill something in, check the fields and values she plans,
+  press Return, and she fills it with Claude's computer use. She only types the values you
+  confirmed and never presses Return or clicks a button, link or checkbox, so saving stays yours.
+  Esc or any touch stops her. `make test-fill` checks it on a real form.
 
 ### Changed
 
