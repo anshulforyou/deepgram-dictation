@@ -25,12 +25,14 @@ every session next to the files it was made from. Standard library only.
 """
 
 import argparse
+import base64
 import datetime
 import hashlib
 import json
 import os
 import re
 import sys
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -152,13 +154,13 @@ def file_block(home, f):
     return f'<file path="{label}">\n{f.read_text(errors="replace").strip()}\n</file>'
 
 
-def resolve_source(home, source):
-    """The project CLAUDE.md a `source:` line points to, or None when it isn't safe to read:
-    anything but a CLAUDE.md, a path through a symlink, a hidden folder (.ssh) or a folder named
-    like a secret, and `..` tricks are all refused."""
-    path = Path(os.path.expanduser(source))
+def safe_path(home, token):
+    """The file or folder a path in memory names (absolute, ~/..., or relative to the grandma home),
+    or None when it isn't safe to read: through a symlink, a hidden folder (.ssh) or one named like
+    a secret, or `..` tricks."""
+    path = Path(os.path.expanduser(token))
     path = Path(os.path.abspath(path if path.is_absolute() else home / path))
-    if path.name != "CLAUDE.md" or not nfg.safe_file(path):
+    if not path.exists() or path.is_symlink() or path.name.startswith(".") or nfg.SECRET_FILE.search(path.name):
         return None
     if any(p.is_symlink() and p not in SYSTEM_LINKS for p in path.parents):
         return None
@@ -166,6 +168,53 @@ def resolve_source(home, source):
         if part.startswith(".") or part.lower() in nfg.NEVER_READ_DIRS or nfg.SECRET_FILE.search(part):
             return None
     return path
+
+
+def resolve_source(home, source):
+    """The project CLAUDE.md a `source:` line points to, or None when it isn't a CLAUDE.md or
+    isn't safe to read (see safe_path)."""
+    path = safe_path(home, source)
+    return path if path and path.name == "CLAUDE.md" and nfg.safe_file(path) else None
+
+
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".heic"}
+MAX_IMAGES = 8
+PATH_TOKEN = re.compile(r"(?<![\w@:])(~?/?[\w.-]+(?:/[\w.-]+)+/?)")
+
+
+def image_info(path):
+    """{width, height, thumb}: the image's size and a small JPEG thumbnail (base64) for Claude."""
+    out = subprocess.run(["/usr/bin/sips", "-g", "pixelWidth", "-g", "pixelHeight", str(path)],
+                         capture_output=True, text=True).stdout
+    size = dict(re.findall(r"(pixelWidth|pixelHeight): (\d+)", out))
+    with tempfile.TemporaryDirectory() as tmp:
+        thumb = Path(tmp) / "thumb.jpg"
+        subprocess.run(["/usr/bin/sips", "-Z", "256", "-s", "format", "jpeg", "-s", "formatOptions", "60",
+                        str(path), "--out", str(thumb)], capture_output=True)
+        data = base64.b64encode(thumb.read_bytes()).decode() if thumb.exists() else ""
+    return {"width": int(size.get("pixelWidth", 0)), "height": int(size.get("pixelHeight", 0)), "thumb": data}
+
+
+def images(home, text, limit=MAX_IMAGES):
+    """Images the memory points to: image files it names, and the images at the top of folders it
+    names, each with the line that mentions it. Only what safe_path allows, at most `limit`."""
+    found, seen = [], set()
+    for line in text.splitlines():
+        for token in PATH_TOKEN.findall(line):
+            path = safe_path(home, token.rstrip(".,;:)"))
+            if not path:
+                continue
+            files = sorted(f for f in path.iterdir() if f.suffix.lower() in IMAGE_EXT) if path.is_dir() \
+                else [path] if path.suffix.lower() in IMAGE_EXT else []
+            for f in files:
+                if f in seen or not nfg.safe_file(f) or f.stat().st_size > 20_000_000:
+                    continue
+                seen.add(f)
+                found.append({"id": "img-" + hashlib.sha1(str(f).encode()).hexdigest()[:8], "path": str(f),
+                              "name": f.name, "note": line.strip()[:200]})
+                if len(found) >= limit:
+                    return [dict(i, **image_info(i["path"])) for i in found]
+    return [dict(i, **image_info(i["path"])) for i in found]
 
 
 def memory_text(home, item):
@@ -221,11 +270,13 @@ def read_profile(home):
 def context(home, question):
     items = entries(home)
     chosen = select(items, question)
+    texts = [memory_text(home, i) for i in chosen]
     return {
         "profile": read_profile(home),
         "catalog": catalog(items),
         "openable": [i["name"] for i in items],
-        "memory": capped([{"name": i["name"], "kind": i["kind"], "text": memory_text(home, i)} for i in chosen]),
+        "memory": capped([{"name": i["name"], "kind": i["kind"], "text": t} for i, t in zip(chosen, texts)]),
+        "images": images(home, "\n".join(texts)),
     }
 
 
@@ -238,8 +289,9 @@ def open_item(home, name, limit=None):
             facts = i["dir"] / "facts.md"
             if i["kind"] == "project" and nfg.readable_dir(i["dir"]) and nfg.safe_file(facts):
                 text += "\n\n" + file_block(home, facts)
-            return capped([{"name": i["name"], "kind": i["kind"], "text": text}],
-                          None if limit is None else max(limit, 1))[0]
+            block = capped([{"name": i["name"], "kind": i["kind"], "text": text}],
+                           None if limit is None else max(limit, 1))[0]
+            return dict(block, images=images(home, text))
     raise ContextError(f"no sweater or project called {name!r}")
 
 

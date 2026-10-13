@@ -10,3 +10,4 @@ deepgram-dictionary.json
 .lua/
 recorder/build/
 assets/preview-*.png
+dragger/build/

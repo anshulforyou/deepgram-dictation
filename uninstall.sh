@@ -9,7 +9,8 @@ SUPPORT_DIR="${DEEPGRAM_DICTATION_SUPPORT_DIR:-$HOME/Library/Application Support
 PURGE=0
 [[ "${1:-}" == "--purge" ]] && PURGE=1
 
-rm -rf "$HS_DIR/deepgram_dictation" "$SUPPORT_DIR/DeepgramRecorder.app"
+rm -rf "$HS_DIR/deepgram_dictation" "$SUPPORT_DIR/DeepgramRecorder.app" "$SUPPORT_DIR/GrandmaDrag" \
+  "$SUPPORT_DIR/GrandmaDrag.sha256"
 
 if [[ -f "$HS_DIR/init.lua" ]]; then
   # Drop the block install.sh appended: from the marker comment through the closing "})".

@@ -131,15 +131,19 @@ end
 -- Shows `text` next to the mouse, on whichever display it is on now. `note` is the small line in
 -- the header ("Copied"). Closes on a click on the panel, on Esc, or when the next dictation starts.
 -- With `keys` ({ onReturn, onEscape }) it asks: Return and Esc are answered here and never reach
--- the app underneath (so Return can't submit a form), and a click counts as Esc.
-function M.showPanel(text, note, isError, keys)
+-- the app underneath (so Return can't submit a form), and a click counts as Esc. `pictures`
+-- ({ { path, caption } }) are shown under the text, so a file is seen before it is uploaded.
+local THUMB, CAPTION = 84, 18
+function M.showPanel(text, note, isError, keys, pictures)
+  pictures = pictures or {}
   M.closePanel()
   local frame = (hs.mouse.getCurrentScreen() or hs.screen.mainScreen()):frame()
   local body = styled(text, BODY_SIZE, isError and M.ROSE_LIGHT or PANEL_TEXT)
   local maxBody = math.floor(frame.h * 0.7) - HEADER - 3 * PAD
   local c = hs.canvas.new({ x = 0, y = 0, w = W, h = 100 })
   local bodyH = math.min(textHeight(c, text, W - 2 * PAD, isError), maxBody)
-  local h = PAD + HEADER + 10 + bodyH + PAD
+  local shelf = #pictures > 0 and (12 + THUMB + CAPTION) or 0
+  local h = PAD + HEADER + 10 + bodyH + shelf + PAD
   c:size({ w = W, h = h })
   c:topLeft(core.panelOrigin(hs.mouse.absolutePosition(), W, h, frame))
   c:appendElements({
@@ -154,6 +158,18 @@ function M.showPanel(text, note, isError, keys)
       frame = { x = W - PAD - 200, y = PAD + 3, w = 200, h = HEADER } },
     { type = "text", text = body, frame = { x = PAD, y = PAD + HEADER + 10, w = W - 2 * PAD, h = bodyH } },
   })
+  local slot = math.floor((W - 2 * PAD) / math.max(1, math.min(#pictures, 4)))
+  for i, pic in ipairs(pictures) do
+    if i > 4 then break end
+    local x, y = PAD + (i - 1) * slot, PAD + HEADER + 10 + bodyH + 12
+    local image = hs.image.imageFromPath(pic.path)
+    if image then
+      c:appendElements({ type = "image", image = image, imageScaling = "scaleProportionally",
+                         frame = { x = x, y = y, w = math.min(slot - 10, THUMB * 1.9), h = THUMB } })
+    end
+    c:appendElements({ type = "text", text = styled(pic.caption or "", 11, PANEL_MUTED),
+                       frame = { x = x, y = y + THUMB + 2, w = slot - 10, h = CAPTION } })
+  end
   c:level(hs.canvas.windowLevels.floating)
   c:behavior({ "canJoinAllSpaces" })
   pendingCancel = keys and keys.onEscape

@@ -130,14 +130,14 @@ function M.ask(question, shot, done)
   end
   local started = hs.timer.secondsSinceEpoch()
   local finished, timer, body = false, nil, nil
-  local sent, opened, opens, sentChars = {}, {}, 0, 0
+  local sent, opened, opens, sentChars, images = {}, {}, 0, 0, {}
   local function finish(answer, status, reason)
     if finished then return end
     finished = true
     if timer then timer:stop() end
     local ms = math.floor((hs.timer.secondsSinceEpoch() - started) * 1000 + 0.5)
     if status ~= "ok" then log("%s after %d ms%s", status, ms, reason and (": " .. reason) or "") end
-    done(answer, { status = status, ms = ms, reason = reason, memory = sent, opened = opened })
+    done(answer, { status = status, ms = ms, reason = reason, memory = sent, opened = opened, images = images })
     memory.refreshProfile()
   end
   timer = hs.timer.doAfter(cfg.screenTimeout, function() finish(nil, "timeout", "no answer after "
@@ -165,7 +165,8 @@ function M.ask(question, shot, done)
       memory.open(call.name, math.max(MIN_OPEN_CHARS, MEMORY_CHARS - sentChars), function(block, err)
         if block then
           table.insert(opened, block.name)
-          table.insert(results, { id = call.id, text = block.text })
+          for _, img in ipairs(block.images or {}) do table.insert(images, img) end
+          table.insert(results, { id = call.id, text = block.text, images = block.images })
         else
           table.insert(results, { id = call.id, text = tostring(err), isError = true })
         end
@@ -189,7 +190,7 @@ function M.ask(question, shot, done)
       end
       local calls = core.memoryRequests(ok and resp or nil)
       if #calls > 0 then return openMemory(calls, resp) end
-      local answer, why = core.parseScreenAnswer(ok and resp or nil, hs.json.decode)
+      local answer, why = core.parseScreenAnswer(ok and resp or nil, hs.json.decode, images)
       if answer then finish(answer, "ok") else finish(nil, "error", why) end
     end)
   end
@@ -204,6 +205,9 @@ function M.ask(question, shot, done)
     for _, m in ipairs(context and context.memory or {}) do
       table.insert(sent, m.name)
       sentChars = sentChars + #m.text
+    end
+    for _, img in ipairs(context and context.images or {}) do
+      table.insert(images, img)
     end
     body = core.screenRequest(cfg, instructions, question, shot.data, "image/jpeg", context)
     post()

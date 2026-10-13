@@ -118,6 +118,7 @@ local function planText(answer)
   local lines = { answer.text ~= "" and answer.text or "Grandma will fill in:", "" }
   for _, f in ipairs(answer.fields) do
     table.insert(lines, f.skip and string.format("%s: not in your memory, will skip", f.label)
+      or f.file and string.format("%s: upload %s (shown below)", f.label, f.file.name)
       or string.format("%s: %s", f.label, f.value))
   end
   table.insert(lines, "")
@@ -157,6 +158,10 @@ local function answerScreen(raw, recording, record, s)
                       fields = answer and answer.fields, memory = info.memory, opened = info.opened }
     if answer and answer.kind == "fill" then
       -- Nothing is touched until the user has seen the plan and said yes.
+      local pictures = {}
+      for _, f in ipairs(answer.fields) do
+        if f.file and not f.skip then table.insert(pictures, { path = f.file.path, caption = f.label }) end
+      end
       return overlay.showPanel(planText(answer), "Fill this form?", false, {
         onReturn = function()
           record.screen.confirmed = true
@@ -166,7 +171,7 @@ local function answerScreen(raw, recording, record, s)
           record.screen.confirmed = false
           history.save(recording, record)
         end,
-      })
+      }, pictures)
     end
     if answer and answer.kind == "insert" then
       pasteText(answer.text)

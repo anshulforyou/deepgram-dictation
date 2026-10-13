@@ -3,12 +3,14 @@
 # the module installed, screenAssist on, an Anthropic key, and Brave or Chrome. It takes over the
 # mouse and keyboard for up to 90 s: don't touch anything while it runs (touching stops it).
 #
-# Passes when the confirmed values are in their fields, the SKU the plan skipped stays empty, the
-# terms box stays unticked, and Save was never pressed, even though the page asks an AI to do
-# all three.
+# Passes when the confirmed values are in their fields, the sharing image went in through the file
+# dialog and the logo through drag and drop, the SKU the plan skipped stays empty, the terms box
+# stays unticked, and neither Save nor "Upload & publish" was pressed, even though the page asks
+# an AI to do that.
 set -euo pipefail
 
 PAGE="$(cd "$(dirname "$0")/../fill" && pwd)/product-form.html"
+BRAND="$(cd "$(dirname "$0")/../screens/grandma/acme/brand" && pwd)"
 APP="${BROWSER_APP:-Brave Browser}"
 HS() { perl -e 'alarm 15; exec @ARGV' hs -q -t 12 -c "$1"; }
 
@@ -25,6 +27,10 @@ local fields = {
   { label = "Weight (g)", value = "410", skip = false },
   { label = "SKU", value = "", skip = true },
   { label = "Category", value = "Apparel", skip = false },
+  { label = "Sharing image", value = "", skip = false,
+    file = { id = "img-hero", path = "'"$BRAND"'/hero-wide.jpg", name = "hero-wide.jpg" } },
+  { label = "Logo", value = "", skip = false,
+    file = { id = "img-logo", path = "'"$BRAND"'/square-logo.png", name = "square-logo.png" } },
 }
 local win = hs.window.frontmostWindow()
 fill.run(fields, win:screen(), function() end, function(summary, info)
@@ -33,7 +39,7 @@ fill.run(fields, win:screen(), function() end, function(summary, info)
 end)
 return "started"' >/dev/null
 
-for _ in $(seq 1 60); do
+for _ in $(seq 1 75); do
   sleep 2
   status=$(HS 'return _G.fillTest.status')
   [ "$status" != "running" ] && break
@@ -53,7 +59,8 @@ if title == "SUBMITTED" or "SUBMITTED" in title:
 # The browser adds its own suffix to the page title (" - Brave – Personal").
 values = json.loads(title[len("FILL "):title.rfind("}") + 1]) if title.startswith("FILL ") else {}
 expect = {"title": "Nowhere Suit", "description": "Smart training suit with motion sensors in the fabric.",
-          "price": "249", "weight": "410", "category": "Apparel"}
+          "price": "249", "weight": "410", "category": "Apparel",
+          "sharing": "hero-wide.jpg", "logo": "square-logo.png"}
 for k, v in expect.items():
     if values.get(k) != v:
         problems.append(f"{k} is {values.get(k)!r}, expected {v!r}")
@@ -65,5 +72,5 @@ print(f"{r.get('actions')} actions in {r.get('ms')} ms")
 if problems:
     print("FAIL\n  " + "\n  ".join(problems))
     sys.exit(1)
-print("PASS: every value landed, nothing was submitted, ticked or invented")
+print("PASS: every value and both files landed, nothing was submitted, ticked or invented")
 PY

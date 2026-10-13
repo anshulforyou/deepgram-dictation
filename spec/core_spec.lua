@@ -947,14 +947,74 @@ describe("filling a form", function()
         { type = "tool_use", id = "b", name = "open_memory", input = {} },
         { type = "tool_use", id = "c", name = "screenshot", toolset_name = "computer" },
       } }
-      assert.are.same({ { id = "a", name = "left_click", input = { coordinate = { 1, 2 } } },
-                        { id = "c", name = "screenshot", input = {} } }, core.fillActions(resp))
+      assert.are.same({ { id = "a", name = "left_click", input = { coordinate = { 1, 2 } }, computer = true },
+                        { id = "b", name = "open_memory", input = {}, computer = false },
+                        { id = "c", name = "screenshot", input = {}, computer = true } }, core.fillActions(resp))
     end)
 
     it("parses keys", function()
       assert.are.same({ { "shift" }, "tab" }, { core.fillKey("Shift+Tab") })
       assert.are.same({ { "cmd" }, "a" }, { core.fillKey("super+a") })
     end)
+  end)
+end)
+
+describe("uploading a file from memory", function()
+  local images = {
+    { id = "img-1", path = "/m/acme/brand/hero-wide.jpg", name = "hero-wide.jpg", width = 1200, height = 630,
+      note = "hero-wide.jpg is the sharing image", thumb = "THUMB1" },
+    { id = "img-2", path = "/m/acme/brand/logo.png", name = "logo.png", width = 512, height = 512, note = "",
+      thumb = "" },
+  }
+  local fields = core.fillFields({
+    { label = "Title", value = "Trailrunner 2", upload = "", skip = false },
+    { label = "Sharing image", value = "", upload = "img-1", skip = false },
+    { label = "Logo", value = "", upload = "img-9", skip = false },
+  }, images)
+
+  it("turns an upload field into the confirmed file, and skips one naming an image it wasn't shown", function()
+    assert.are.same({ id = "img-1", path = "/m/acme/brand/hero-wide.jpg", name = "hero-wide.jpg" }, fields[2].file)
+    assert.is_false(fields[2].skip)
+    assert.is_true(fields[3].skip)
+    assert.is_nil(fields[3].file)
+  end)
+
+  it("sends each memory image as what memory says about it, then its thumbnail", function()
+    local blocks = core.imageBlocks(images)
+    assert.are.equal(2, #blocks, "an image without a thumbnail is left out")
+    assert.are.equal('<memory_image id="img-1" file="hero-wide.jpg" size="1200x630">'
+      .. "hero-wide.jpg is the sharing image</memory_image>", blocks[1].text)
+    assert.are.equal("THUMB1", blocks[2].source.data)
+    local body = core.screenRequest(core.mergeConfig(), "S", "q", "IMG", "image/jpeg", { images = images, memory = {} })
+    assert.are.equal("THUMB1", body.messages[1].content[2].source.data)
+  end)
+
+  it("offers upload_file only for confirmed files and tells Claude which field gets which", function()
+    local tools = core.fillTools(fields)
+    assert.are.equal("upload_file", tools[2].name)
+    assert.are.same({ "img-1" }, tools[2].input_schema.properties.file.enum)
+    assert.are.equal(1, #core.fillTools({ { label = "T", value = "x", skip = false } }))
+    assert.truthy(core.fillPlanText(fields):find("- Sharing image: upload file img-1 (hero-wide.jpg)", 1, true))
+  end)
+
+  it("uploads only confirmed files, at most twice each", function()
+    assert.is_true(core.checkFillAction("upload_file", { file = "img-1", coordinate = { 1, 1 } }, fields))
+    assert.is_false(core.checkFillAction("upload_file", { file = "img-9" }, fields))
+    assert.is_false(core.checkFillAction("upload_file", { file = "/etc/passwd" }, fields))
+    assert.is_true(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 1 }))
+    assert.is_false(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 2 }))
+  end)
+
+  it("clicks upload buttons and drop zones, never anything that saves or publishes", function()
+    assert.is_true(core.uploadClickAllowed("AXButton", "Upload"))
+    assert.is_true(core.uploadClickAllowed("AXButton", "Choose image"))
+    assert.is_true(core.uploadClickAllowed("AXGroup", "Drop your logo here"))
+    assert.is_true(core.uploadClickAllowed("AXGroup", nil))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Upload & publish"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Save product"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Options"))
+    assert.is_false(core.uploadClickAllowed("AXCheckBox", "Add"))
+    assert.is_false(core.uploadClickAllowed("AXGroup", "Submit"))
   end)
 end)
 

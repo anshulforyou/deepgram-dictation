@@ -43,7 +43,7 @@ render-screens:
 
 lint:
 	$(LUACHECK) src spec
-	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh tests/integration/fill.sh
+	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh dragger/build.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh tests/integration/fill.sh
 
 install:
 	./install.sh

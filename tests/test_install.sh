@@ -23,6 +23,7 @@ echo '{"keyterms":["Mine"],"replacements":[]}' > "$HAMMERSPOON_DIR/deepgram-dict
 [[ -x "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app/Contents/MacOS/DeepgramRecorder" ]] \
   || fail "recorder not built"
 codesign --verify "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app" || fail "recorder not signed"
+[[ -x "$DEEPGRAM_DICTATION_SUPPORT_DIR/GrandmaDrag" ]] || fail "drag helper not built"
 grep -q '"Mine"' "$HAMMERSPOON_DIR/deepgram-dictionary.json" || fail "existing dictionary overwritten"
 grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "existing init.lua lost"
 [[ $(grep -c 'require("deepgram_dictation")' "$HAMMERSPOON_DIR/init.lua") -eq 1 ]] || fail "init block not added exactly once"
@@ -31,6 +32,7 @@ grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "existing init.lua
 
 [[ ! -e "$HAMMERSPOON_DIR/deepgram_dictation" ]] || fail "module not removed"
 [[ ! -e "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app" ]] || fail "recorder not removed"
+[[ ! -e "$DEEPGRAM_DICTATION_SUPPORT_DIR/GrandmaDrag" ]] || fail "drag helper not removed"
 ! grep -q 'deepgram' "$HAMMERSPOON_DIR/init.lua" || fail "init block not removed"
 grep -q 'existing config' "$HAMMERSPOON_DIR/init.lua" || fail "uninstall removed unrelated config"
 [[ -f "$HAMMERSPOON_DIR/deepgram-dictionary.json" ]] || fail "dictionary removed without --purge"

@@ -454,9 +454,10 @@ core.SCREEN_SCHEMA = {
         properties = {
           label = { type = "string" },
           value = { type = "string" },
+          upload = { type = "string" }, -- id of a memory image for an upload field, else ""
           skip = { type = "boolean" },
         },
-        required = { "label", "value", "skip" },
+        required = { "label", "value", "upload", "skip" },
         additionalProperties = false,
       },
     },
@@ -503,6 +504,7 @@ function core.screenRequest(cfg, systemPrompt, question, image, mediaType, memor
       table.insert(content, { type = "text", text = string.format('<memory name="%s" kind="%s">\n%s\n</memory>',
         m.name, m.kind, m.text) })
     end
+    for _, block in ipairs(core.imageBlocks(memory.images)) do table.insert(content, block) end
     if #content > 0 then content[#content].cache_control = { type = "ephemeral" } end
     if memory.openable and #memory.openable > 0 then tools = { core.openMemoryTool(memory.openable) } end
   end
@@ -519,6 +521,21 @@ function core.screenRequest(cfg, systemPrompt, question, image, mediaType, memor
     tools = tools,
     messages = { { role = "user", content = content } },
   }
+end
+
+-- Memory images as content: for each, what memory says about it, then a small thumbnail, so
+-- Claude can choose which one an upload field wants by what it shows.
+function core.imageBlocks(images)
+  local out = {}
+  for _, img in ipairs(images or {}) do
+    if type(img.thumb) == "string" and img.thumb ~= "" then
+      table.insert(out, { type = "text", text = string.format(
+        '<memory_image id="%s" file="%s" size="%dx%d">%s</memory_image>', img.id, img.name,
+        tonumber(img.width) or 0, tonumber(img.height) or 0, img.note or "") })
+      table.insert(out, { type = "image", source = { type = "base64", media_type = "image/jpeg", data = img.thumb } })
+    end
+  end
+  return out
 end
 
 -- The open_memory calls in a response that stopped to use tools: { { id, name } }.
@@ -539,7 +556,13 @@ end
 function core.continueWithResults(body, resp, results)
   local content = {}
   for _, r in ipairs(results) do
-    table.insert(content, { type = "tool_result", tool_use_id = r.id, content = r.text, is_error = r.isError or nil })
+    local value = r.text
+    local pictures = core.imageBlocks(r.images)
+    if #pictures > 0 then
+      value = { { type = "text", text = r.text } }
+      for _, block in ipairs(pictures) do table.insert(value, block) end
+    end
+    table.insert(content, { type = "tool_result", tool_use_id = r.id, content = value, is_error = r.isError or nil })
   end
   table.insert(body.messages, { role = "assistant", content = resp.content })
   table.insert(body.messages, { role = "user", content = content })
@@ -548,7 +571,7 @@ end
 
 -- { kind, text } from a decoded Messages API response, or nil plus what went wrong. A reply
 -- that isn't the expected JSON is still shown, as an answer, rather than thrown away.
-function core.parseScreenAnswer(resp, decode)
+function core.parseScreenAnswer(resp, decode, images)
   if type(resp) ~= "table" then return nil, "unexpected response" end
   if resp.type == "error" then
     return nil, "api error: " .. tostring(type(resp.error) == "table" and resp.error.message or resp.error)
@@ -563,7 +586,7 @@ function core.parseScreenAnswer(resp, decode)
   if raw == "" then return nil, "empty answer" end
   local ok, value = pcall(decode, raw)
   if ok and type(value) == "table" and value.kind == "fill" then
-    local fields = core.fillFields(value.fields)
+    local fields = core.fillFields(value.fields, images)
     if #fields > 0 then
       return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
                fields = fields }
@@ -576,15 +599,21 @@ function core.parseScreenAnswer(resp, decode)
   return { kind = "answer", text = raw }
 end
 
--- The well-formed fields of a fill plan: { { label, value, skip } }. A field with no value is
--- always skipped.
-function core.fillFields(list)
+-- The well-formed fields of a fill plan: { { label, value, skip, file } }. An upload field names
+-- one of `images` (memory images offered with the question, by id) and gets its `file`
+-- ({ id, path, name }); one naming anything else, or a field with no value, is skipped.
+function core.fillFields(list, images)
+  local byId = {}
+  for _, img in ipairs(images or {}) do byId[img.id] = img end
   local out = {}
   for _, f in ipairs(type(list) == "table" and list or {}) do
     if type(f) == "table" and type(f.label) == "string" and f.label:match("%S") then
       local value = type(f.value) == "string" and f.value or ""
-      table.insert(out, { label = f.label:match("^%s*(.-)%s*$"), value = value,
-                          skip = f.skip == true or not value:match("%S") })
+      local img = type(f.upload) == "string" and f.upload ~= "" and byId[f.upload]
+      local field = { label = f.label:match("^%s*(.-)%s*$"), value = img and "" or value,
+                      skip = f.skip == true or not (img or value:match("%S")) }
+      if img then field.file = { id = img.id, path = img.path, name = img.name } end
+      table.insert(out, field)
     end
   end
   return out
@@ -647,9 +676,15 @@ end
 -- Whether grandma may run this computer action, given the plan the user confirmed. Returns true,
 -- or false and why. Typing is limited to the confirmed values, so nothing on screen can make her
 -- type anything else.
-function core.checkFillAction(name, input, fields)
-  if not core.FILL_ACTIONS[name] then return false, name .. " isn't allowed while filling" end
+function core.checkFillAction(name, input, fields, uploaded)
   input = type(input) == "table" and input or {}
+  if name == "upload_file" then
+    local file = core.fillUploads(fields)[input.file]
+    if not file then return false, "only the files the user confirmed can be uploaded" end
+    if ((uploaded or {})[input.file] or 0) >= 2 then return false, "that file was already tried twice" end
+    return true
+  end
+  if not core.FILL_ACTIONS[name] then return false, name .. " isn't allowed while filling" end
   if name == "type" then
     local text = type(input.text) == "string" and input.text or ""
     for _, f in ipairs(fields or {}) do
@@ -689,19 +724,25 @@ function core.fillResult(id, content, isError)
            is_error = isError or nil }
 end
 
+-- A tool_result for grandma's own tools (upload_file), which don't belong to the toolset.
+function core.toolResult(id, content, isError)
+  return { type = "tool_result", tool_use_id = id, content = content, is_error = isError or nil }
+end
+
 function core.fillImage(id, data)
   return core.fillResult(id, {
     { type = "image", source = { type = "base64", media_type = "image/jpeg", data = data } },
   })
 end
 
--- The computer actions in a response: { { id, name, input } } (blocks of other tools are ignored).
+-- The actions in a response: { { id, name, input, computer } }, computer actions and uploads.
 function core.fillActions(resp)
   local out = {}
   for _, block in ipairs(type(resp) == "table" and type(resp.content) == "table" and resp.content or {}) do
-    if type(block) == "table" and block.type == "tool_use" and block.toolset_name == "computer" then
+    if type(block) == "table" and block.type == "tool_use" then
       local input = type(block.input) == "table" and block.input or {}
-      table.insert(out, { id = block.id, name = block.name, input = input })
+      table.insert(out, { id = block.id, name = block.name, input = input,
+                          computer = block.toolset_name == "computer" })
     end
   end
   return out
@@ -711,9 +752,75 @@ end
 function core.fillPlanText(fields)
   local lines = { "Fill in these fields on screen. Type each value exactly as written:" }
   for _, f in ipairs(fields) do
-    if not f.skip then table.insert(lines, string.format("- %s: %s", f.label, f.value)) end
+    if not f.skip and f.file then
+      table.insert(lines, string.format("- %s: upload file %s (%s) with upload_file", f.label, f.file.id, f.file.name))
+    elseif not f.skip then
+      table.insert(lines, string.format("- %s: %s", f.label, f.value))
+    end
   end
   return table.concat(lines, "\n")
+end
+
+-- The confirmed uploads: { [id] = { id, path, name } }.
+function core.fillUploads(fields)
+  local out = {}
+  for _, f in ipairs(fields or {}) do
+    if not f.skip and f.file then out[f.file.id] = f.file end
+  end
+  return out
+end
+
+-- Puts a confirmed file into an upload field or drop zone. The upload itself is done by
+-- screen_fill.lua (a file dialog, or a real drag), never by typing or clicking through Claude.
+function core.uploadTool(ids)
+  return {
+    name = "upload_file",
+    description = "Upload one of the confirmed files into the upload button or drop zone at `coordinate` "
+      .. "(screenshot pixels). Point at the upload button, or at the middle of the drop zone.",
+    input_schema = {
+      type = "object",
+      properties = {
+        file = { type = "string", enum = ids },
+        coordinate = { type = "array", items = { type = "number" } },
+      },
+      required = { "file", "coordinate" },
+      additionalProperties = false,
+    },
+  }
+end
+
+-- Words on an upload control. A button is clicked to upload only when its label reads like one
+-- of these and none of the refused ones: "Upload & publish" is refused.
+core.UPLOAD_WORDS = { "upload", "choose", "browse", "select", "add", "replace", "change", "attach", "drop", "drag" }
+core.UPLOAD_REFUSED = { "save", "submit", "publish", "send", "pay", "delete", "remove", "post", "confirm",
+                        "buy", "order", "checkout", "sign", "agree", "accept", "next", "continue", "done" }
+
+-- Whether the upload click may go to an element with this role and label. Drop zones are plain
+-- page areas (groups, text, images); buttons and links need an upload label.
+function core.uploadClickAllowed(role, label)
+  local text = tostring(label or ""):lower()
+  for _, word in ipairs(core.UPLOAD_REFUSED) do
+    if text:find("%f[%a]" .. word) then return false, "the upload target reads \"" .. tostring(label) .. "\"" end
+  end
+  if role == "AXButton" or role == "AXLink" then
+    for _, word in ipairs(core.UPLOAD_WORDS) do
+      if text:find("%f[%a]" .. word) then return true end
+    end
+    return false, "that button isn't an upload button"
+  end
+  if role == "AXGroup" or role == "AXStaticText" or role == "AXImage" or role == "AXWebArea" or role == "AXUnknown" then
+    return true
+  end
+  return false, "can't upload into " .. tostring(role or "an unknown element")
+end
+
+function core.fillTools(fields)
+  local ids = {}
+  for id in pairs(core.fillUploads(fields)) do table.insert(ids, id) end
+  table.sort(ids)
+  local tools = { core.fillToolset() }
+  if #ids > 0 then table.insert(tools, core.uploadTool(ids)) end
+  return tools
 end
 
 function core.fillRequest(cfg, systemPrompt, fields, image)
@@ -723,7 +830,7 @@ function core.fillRequest(cfg, systemPrompt, fields, image)
     thinking = { type = "adaptive" },
     output_config = { effort = cfg.screenEffort },
     system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
-    tools = { core.fillToolset() },
+    tools = core.fillTools(fields),
     messages = { { role = "user", content = {
       { type = "text", text = core.fillPlanText(fields) },
       { type = "image", source = { type = "base64", media_type = "image/jpeg", data = image } },
