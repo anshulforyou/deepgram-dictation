@@ -53,18 +53,32 @@ class ExtractError(Exception):
     pass
 
 
+def safe_file(f):
+    """A regular .md file that isn't a symlink, hidden, or named like a secret."""
+    return f.is_file() and not f.is_symlink() and not f.name.startswith(".") and not SECRET_FILE.search(f.name)
+
+
+def readable_dir(d):
+    """A real directory (not a symlink to one) that isn't, or doesn't lead to, the secrets folder."""
+    return d.is_dir() and not d.is_symlink() and d.name.lower() not in NEVER_READ_DIRS \
+        and d.resolve().name.lower() not in NEVER_READ_DIRS
+
+
+def sweaters(home):
+    """Sweater directories, never the secrets folder even when it looks like one."""
+    return [d for d in sorted(home.iterdir()) if readable_dir(d) and meeting_grandma.is_sweater(d)]
+
+
+def root_files(d):
+    """The memory files at the root of `d` that are safe to read."""
+    if not readable_dir(d):
+        return []
+    return [f for f in sorted(d.glob("*.md")) if safe_file(f)]
+
+
 def memory_files(home):
     """Root .md files of global/ and every sweater, minus anything secret-looking."""
-    dirs = [home / "global"] + [d for d in sorted(home.iterdir()) if meeting_grandma.is_sweater(d)]
-    files = []
-    for d in dirs:
-        if not d.is_dir() or d.name.lower() in NEVER_READ_DIRS:
-            continue
-        for f in sorted(d.glob("*.md")):
-            if f.is_file() and not f.is_symlink() and not f.name.startswith(".") \
-                    and not SECRET_FILE.search(f.name):
-                files.append(f)
-    return files
+    return [f for d in [home / "global"] + sweaters(home) for f in root_files(d)]
 
 
 def build_notes(home, files):
@@ -83,6 +97,19 @@ def read_api_key(keychain_name):
     return out
 
 
+def post_messages(body, api_key):
+    """POSTs a Messages API request and returns the decoded response, or raises ExtractError."""
+    req = urllib.request.Request(API_URL, data=json.dumps(body).encode(), headers={
+        "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise ExtractError(f"Anthropic API HTTP {e.code}: {e.read().decode(errors='replace')[:300]}")
+    except (urllib.error.URLError, TimeoutError) as e:
+        raise ExtractError(f"Anthropic API unreachable: {e}")
+
+
 def ask_claude(notes, api_key, model):
     body = {
         "model": model,
@@ -90,15 +117,7 @@ def ask_claude(notes, api_key, model):
         "output_config": {"effort": "low", "format": {"type": "json_schema", "schema": SCHEMA}},
         "messages": [{"role": "user", "content": PROMPT.format(notes=notes)}],
     }
-    req = urllib.request.Request(API_URL, data=json.dumps(body).encode(), headers={
-        "x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            data = json.load(resp)
-    except urllib.error.HTTPError as e:
-        raise ExtractError(f"Anthropic API HTTP {e.code}: {e.read().decode(errors='replace')[:300]}")
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise ExtractError(f"Anthropic API unreachable: {e}")
+    data = post_messages(body, api_key)
     if data.get("stop_reason") != "end_turn":
         raise ExtractError(f"Claude stopped early: {data.get('stop_reason')}")
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")

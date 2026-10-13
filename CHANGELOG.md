@@ -25,6 +25,9 @@ All notable changes to this project are documented here. The format follows
   where you're typing or answers in a panel, from a screenshot of the display under the mouse
   (Claude Sonnet). A rose glow runs round the screen's edges while she looks. `make eval-screen`
   checks her answers on made-up screens.
+- Screen questions know you (with `grandmaHome`): a compact profile generated from your global
+  memory goes with every question, a sweater or project you name goes with it, and grandma can
+  open one herself when the screen is about it.
 
 ### Changed
 

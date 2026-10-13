@@ -102,7 +102,7 @@ def index_descriptions(home):
 def facts_description(d):
     """First bullet under "## What it is" in facts.md, for sweaters INDEX.md doesn't describe."""
     facts = d / "facts.md"
-    if not facts.exists():
+    if not facts.exists() or facts.is_symlink():
         return ""
     m = re.search(r"^## What it is\s*\n+- (.+)$", facts.read_text(errors="replace"), flags=re.M)
     return m.group(1).strip()[:200] if m else ""

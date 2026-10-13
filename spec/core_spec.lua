@@ -687,6 +687,65 @@ describe("screen questions", function()
     end)
   end)
 
+  describe("screenRequest with grandma memory", function()
+    local memory = {
+      profile = "PROFILE", catalog = "- acme: shoes", openable = { "acme", "spring-launch" },
+      memory = { { name = "acme", kind = "sweater", text = "ACME FACTS" } },
+    }
+    local body = core.screenRequest(cfg, "SYSTEM", "q", "IMG", "image/jpeg", memory)
+
+    it("puts the profile and catalog after the instructions, cached", function()
+      assert.are.equal("SYSTEM", body.system[1].text)
+      assert.is_nil(body.system[1].cache_control)
+      assert.truthy(body.system[2].text:find("<profile>\nPROFILE\n</profile>", 1, true))
+      assert.truthy(body.system[2].text:find("<memory_catalog>\n- acme: shoes\n</memory_catalog>", 1, true))
+      assert.are.equal("ephemeral", body.system[2].cache_control.type)
+    end)
+
+    it("sends named memory before the screenshot and caches up to it", function()
+      local content = body.messages[1].content
+      assert.are.equal('<memory name="acme" kind="sweater">\nACME FACTS\n</memory>', content[1].text)
+      assert.are.equal("ephemeral", content[1].cache_control.type)
+      assert.are.equal("image", content[2].type)
+      assert.are.equal("<question>q</question>", content[3].text)
+    end)
+
+    it("offers open_memory for everything in the catalog", function()
+      assert.are.equal("open_memory", body.tools[1].name)
+      assert.are.same({ "acme", "spring-launch" }, body.tools[1].input_schema.properties.name.enum)
+    end)
+
+    it("leaves out what grandma doesn't have", function()
+      local bare = core.screenRequest(cfg, "SYSTEM", "q", "IMG", "image/jpeg",
+        { profile = "", catalog = "", openable = {}, memory = {} })
+      assert.are.equal(1, #bare.system)
+      assert.are.equal("ephemeral", bare.system[1].cache_control.type)
+      assert.is_nil(bare.tools)
+      assert.are.equal("image", bare.messages[1].content[1].type)
+    end)
+  end)
+
+  describe("memoryRequests and continueWithResults", function()
+    local resp = { stop_reason = "tool_use", content = {
+      { type = "thinking", thinking = "", signature = "SIG" },
+      { type = "tool_use", id = "t1", name = "open_memory", input = { name = "acme" } },
+    } }
+
+    it("lists the memory Claude asked to open", function()
+      assert.are.same({ { id = "t1", name = "acme", tool = "open_memory" } }, core.memoryRequests(resp))
+      assert.are.same({}, core.memoryRequests({ stop_reason = "end_turn", content = resp.content }))
+      assert.are.same({}, core.memoryRequests(nil))
+    end)
+
+    it("sends Claude's turn back unchanged, then the results", function()
+      local body = { messages = { { role = "user", content = {} } } }
+      core.continueWithResults(body, resp, { { id = "t1", text = "ACME" }, { id = "t2", text = "no", isError = true } })
+      assert.are.equal(resp.content, body.messages[2].content)
+      assert.are.same({ type = "tool_result", tool_use_id = "t1", content = "ACME" }, body.messages[3].content[1])
+      assert.is_true(body.messages[3].content[2].is_error)
+    end)
+  end)
+
   describe("parseScreenAnswer", function()
     local decoded = {
       ['{"kind":"insert","text":"  Hi Priya, Thursday works.  "}'] =
