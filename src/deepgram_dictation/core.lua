@@ -800,7 +800,7 @@ end
 -- of these and none of the refused ones: "Upload & publish" is refused.
 core.UPLOAD_WORDS = { "upload", "choose", "browse", "select", "add", "replace", "change", "attach", "drop", "drag" }
 core.UPLOAD_REFUSED = { "save", "submit", "publish", "send", "pay", "delete", "remove", "post", "confirm",
-                        "buy", "order", "checkout", "sign", "agree", "accept", "next", "continue", "done" }
+                        "buy", "order", "checkout", "cart", "sign", "agree", "accept", "next", "continue", "done" }
 
 -- Roles a drop zone shows up as (Brave: a plain text element reading "Drop your logo here").
 -- Files are only ever dragged onto these, never onto buttons or links.
@@ -823,6 +823,33 @@ function core.uploadClickAllowed(role, label)
   end
   if core.dropTarget(role) then return true end
   return false, "can't upload into " .. tostring(role or "an unknown element")
+end
+
+-- Roles that act when clicked or when Space is pressed on them.
+core.FILL_PRESSABLE = {
+  AXButton = true, AXLink = true, AXCheckBox = true, AXMenuItem = true, AXMenuButton = true,
+  AXDisclosureTriangle = true,
+}
+
+-- What a click at a point really lands on, from the element under it and its ancestors
+-- ({ { role, label } }, innermost first). Text and images inside a button or link (Chromium
+-- reports those first) count as that button or link, so its label is the one checked.
+function core.clickTarget(chain)
+  for _, el in ipairs(chain or {}) do
+    if core.FILL_PRESSABLE[el.role] then return el.role, el.label end
+  end
+  local first = (chain or {})[1] or {}
+  return first.role, first.label
+end
+
+-- Whether grandma may type (`name` "type") or press a key into the focused element. Typing a
+-- space or pressing Space on a button, link or checkbox would press it, so neither goes to one.
+function core.fillFocusAllowed(name, input, role, subrole)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  if not core.FILL_PRESSABLE[role] then return true end
+  local text = type(input) == "table" and input.text
+  if name == "key" and select(2, core.fillKey(text)) ~= "space" then return true end
+  return false, "the focus is on " .. role .. ", which typing would press"
 end
 
 function core.fillTools(fields)

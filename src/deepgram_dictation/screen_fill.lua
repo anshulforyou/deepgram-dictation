@@ -4,7 +4,8 @@
 --
 --   - only the confirmed values can be typed, so text on the page can't make her type anything else
 --   - Return/Enter is never pressed, and buttons, links, checkboxes and menu items are never
---     clicked (checked through macOS Accessibility before each click), so nothing gets submitted
+--     clicked, nor typed into or pressed with Space when they have the focus (checked through
+--     macOS Accessibility before each action), so nothing gets submitted
 --   - password fields are never typed into
 --   - Esc, or any mouse or keyboard input from the user, stops her at once, and so does switching
 --     to another app; at most the actions and seconds core.fillLimits allows for the plan
@@ -145,6 +146,24 @@ local function attr(el, name)
   return ok and value or nil
 end
 
+-- The element at `point` and up to four of its ancestors, as { { role, label } } for
+-- core.clickTarget.
+local function chainAt(point)
+  local chain, el = {}, element(point)
+  while el and #chain < 5 do
+    local label
+    for _, name in ipairs({ "AXTitle", "AXDescription", "AXValue" }) do
+      local v = attr(el, name)
+      if not label and type(v) == "string" and v:match("%S") then label = v end
+    end
+    local role = attr(el, "AXRole")
+    table.insert(chain, { role = role, label = label })
+    if role == "AXWebArea" or role == "AXWindow" then break end
+    el = attr(el, "AXParent")
+  end
+  return chain
+end
+
 local function focused()
   local ok, el = pcall(function() return hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement") end)
   return ok and el or nil
@@ -193,7 +212,7 @@ function M.run(fields, scr, progress, done)
 
   local maxActions, maxSeconds = core.fillLimits(fields)
   local started = hs.timer.secondsSinceEpoch()
-  local finished, body, menuOpen = false, nil, false
+  local finished, body, menuOpen, uploading = false, nil, false, false
   local uploaded = {} -- file id: upload attempts
   local upload -- defined below
   local actions = {}
@@ -205,6 +224,15 @@ function M.run(fields, scr, progress, done)
     active = nil
     if watcher then watcher:stop() end
     if deadline then deadline:stop() end
+    -- Stopped in the middle of an upload: don't leave its file dialog over the page. Only while
+    -- the page's app is still in front, so Esc can't go to an app the user switched to. After
+    -- this returns, as it may be running inside the event watcher.
+    if uploading then
+      hs.timer.doAfter(0, function()
+        local front = hs.application.frontmostApplication()
+        if bundle and front and front:bundleID() == bundle and openDialog() then closeDialogs() end
+      end)
+    end
     local ms = math.floor((hs.timer.secondsSinceEpoch() - started) * 1000 + 0.5)
     if status ~= "done" then log("%s after %d ms and %d actions: %s", status, ms, #actions, tostring(reason)) end
     done(summary, { status = status, reason = reason, ms = ms, actions = actions })
@@ -293,6 +321,10 @@ function M.run(fields, scr, progress, done)
     end, function(_, stdout)
       if posted or not tostring(stdout):find("ready", 1, true) then return true end
       posted = true
+      if finished then
+        finishDrag(false, "stopped")
+        return true
+      end
       move(types.leftMouseDown, start)
       local steps = 24
       for i = 1, steps do
@@ -303,8 +335,10 @@ function M.run(fields, scr, progress, done)
         end)
       end
       hs.timer.doAfter(0.03 * steps + 0.3, function()
-        move(types.leftMouseDragged, target)
-        move(types.leftMouseUp, target)
+        -- Stopped while dragging: let go over the helper itself, which drops nothing.
+        local drop = finished and start or target
+        move(types.leftMouseDragged, drop)
+        move(types.leftMouseUp, drop)
       end)
       return true
     end, { path, tostring(math.floor(start.x)), tostring(math.floor(start.y)) })
@@ -320,17 +354,16 @@ function M.run(fields, scr, progress, done)
     uploaded[file.id] = (uploaded[file.id] or 0) + 1
     local target = core.fillPoint(a.input.coordinate, frame, scale)
     if not target then return cb(res("Error: coordinate outside the screen", true), true) end
-    local el = element(target)
-    local role = attr(el, "AXRole")
-    local label
-    for _, name in ipairs({ "AXTitle", "AXDescription", "AXValue" }) do
-      local v = attr(el, name)
-      if not label and type(v) == "string" and v:match("%S") then label = v end
-    end
+    local role, label = core.clickTarget(chainAt(target))
     local allowed, why = core.uploadClickAllowed(role, label)
     log("upload %s at %d,%d: %s %q, %s", file.name, target.x, target.y, tostring(role), tostring(label),
       allowed and "allowed" or why)
     if not allowed then return cb(res("Refused: " .. why, true), true) end
+    uploading = true
+    local function reply(result, failed)
+      uploading = false
+      cb(result, failed)
+    end
     click(target, 1)
     local function waitForDialog(retry, after)
       waitFor(openDialog, 3, function(dialog)
@@ -348,20 +381,20 @@ function M.run(fields, scr, progress, done)
       -- A button that opened no dialog isn't a drop zone: dropping a file on it would make the
       -- browser open the file itself, possibly in place of the form.
       if not dialog and not core.dropTarget(role) then
-        return cb(res("Error: that didn't open a file dialog, and it isn't a drop zone", true), true)
+        return reply(res("Error: that didn't open a file dialog, and it isn't a drop zone", true), true)
       end
       if dialog then
         return chooseInDialog(file.path, function(ok, err)
           log("upload %s: dialog %s", file.name, ok and "accepted the file" or tostring(err))
-          if ok then return cb(res("OK: " .. file.name .. " chosen in the file dialog")) end
-          cb(res("Error: " .. tostring(err), true), true)
+          if ok then return reply(res("OK: " .. file.name .. " chosen in the file dialog")) end
+          reply(res("Error: " .. tostring(err), true), true)
         end)
       end
       dragOnto(file.path, target, function(ok, err)
         log("upload %s: drag %s", file.name, ok and "dropped" or tostring(err))
-        if ok then return cb(res("OK: " .. file.name .. " dropped onto the drop zone")) end
+        if ok then return reply(res("OK: " .. file.name .. " dropped onto the drop zone")) end
         if openDialog() then hs.eventtap.keyStroke({}, "escape", 0) end -- never leave a picker open
-        cb(res("Error: " .. tostring(err) .. ". Take a screenshot to see what the page shows.", true), true)
+        reply(res("Error: " .. tostring(err) .. ". Take a screenshot to see what the page shows.", true), true)
       end)
     end)
   end
@@ -383,7 +416,7 @@ function M.run(fields, scr, progress, done)
     table.insert(actions, a.name)
     progress(#actions)
     local detail = a.input.coordinate and string.format(" at %s,%s", tostring(a.input.coordinate[1]),
-      tostring(a.input.coordinate[2])) or a.input.text and string.format(" %q", a.input.text:sub(1, 30)) or ""
+      tostring(a.input.coordinate[2])) or a.input.text and string.format(" %q", tostring(a.input.text):sub(1, 30)) or ""
     log("%d %s%s", #actions, a.name, detail)
     local input = a.input
     if not a.computer and a.name ~= "upload_file" then return cb(res("Refused: unknown tool", true), true) end
@@ -416,11 +449,16 @@ function M.run(fields, scr, progress, done)
       menuOpen = role == "AXPopUpButton" or role == "AXComboBox"
       click(point, a.name == "triple_click" and 3 or 1)
       return after(res("OK"))
-    elseif a.name == "type" then
-      local f = focused()
-      if attr(f, "AXSubrole") == "AXSecureTextField" then
-        return cb(res("Refused: password fields are never filled", true), true)
-      end
+    end
+    -- Typing and keys go to whatever has the focus, so that is checked too.
+    local f
+    if a.name == "type" or a.name == "key" then
+      f = focused()
+      local allowed, reason = core.fillFocusAllowed(a.name, input, attr(f, "AXRole"), attr(f, "AXSubrole"))
+      if not allowed then return cb(res("Refused: " .. reason, true), true) end
+    end
+
+    if a.name == "type" then
       if input.text:find("[\r\n]") and attr(f, "AXRole") ~= "AXTextArea" then
         return cb(res("Refused: a new line would submit this field", true), true)
       end
@@ -448,7 +486,6 @@ function M.run(fields, scr, progress, done)
       return cb(res(string.format("X=%d, Y=%d", math.floor((p.x - frame.x) * scale),
         math.floor((p.y - frame.y) * scale))))
     end
-    if a.name == "upload_file" then return upload(a, res, cb) end
     if a.name == "upload_file" then return upload(a, res, cb) end
     cb(res("Refused: unknown action", true), true)
   end
@@ -497,6 +534,7 @@ function M.run(fields, scr, progress, done)
         if #list > 0 then return runTurn(list, resp) end
       end
       if resp.stop_reason == "refusal" then return finish(nil, "error", "Claude declined to fill this form") end
+      if resp.stop_reason == "max_tokens" then return finish(nil, "error", "Claude's reply was cut off") end
       local parts = {}
       for _, block in ipairs(type(resp.content) == "table" and resp.content or {}) do
         if type(block) == "table" and block.type == "text" then table.insert(parts, block.text) end

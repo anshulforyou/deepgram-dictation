@@ -902,6 +902,26 @@ describe("filling a form", function()
     end)
   end)
 
+  describe("fillFocusAllowed", function()
+    it("types and presses keys in fields", function()
+      assert.is_true(core.fillFocusAllowed("type", { text = "Trail Runner" }, "AXTextField"))
+      assert.is_true(core.fillFocusAllowed("key", { text = "space" }, "AXTextArea"))
+      assert.is_true(core.fillFocusAllowed("type", { text = "x" }, nil))
+    end)
+
+    it("never presses a focused button, link or checkbox with a typed space or Space", function()
+      for _, role in ipairs({ "AXButton", "AXLink", "AXCheckBox", "AXMenuItem" }) do
+        assert.is_false(core.fillFocusAllowed("type", { text = "Trail Runner" }, role), role)
+        assert.is_false(core.fillFocusAllowed("key", { text = "space" }, role), role)
+      end
+      assert.is_true(core.fillFocusAllowed("key", { text = "shift+tab" }, "AXButton"))
+    end)
+
+    it("never types into a password field", function()
+      assert.is_false(core.fillFocusAllowed("type", { text = "x" }, "AXTextField", "AXSecureTextField"))
+    end)
+  end)
+
   describe("coordinates", function()
     it("maps screenshot pixels to points on the right display", function()
       local frame = { x = -1920, y = -233, w = 1920, h = 1080 }
@@ -1035,6 +1055,21 @@ describe("uploading a file from memory", function()
     assert.is_false(core.uploadClickAllowed("AXButton", "Options"))
     assert.is_false(core.uploadClickAllowed("AXCheckBox", "Add"))
     assert.is_false(core.uploadClickAllowed("AXGroup", "Submit"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Add to cart"))
+  end)
+
+  it("treats text inside a button or link as that button or link", function()
+    local inLink = { { role = "AXStaticText", label = "Go live" }, { role = "AXLink", label = "Go live" },
+                     { role = "AXGroup" } }
+    assert.are.same({ "AXLink", "Go live" }, { core.clickTarget(inLink) })
+    assert.is_false(core.uploadClickAllowed(core.clickTarget(inLink)))
+    local inButton = { { role = "AXStaticText", label = "Choose image" }, { role = "AXButton" } }
+    assert.are.same({ "AXButton" }, { core.clickTarget(inButton) })
+    local zone = { { role = "AXStaticText", label = "Drop your logo here" }, { role = "AXGroup" },
+                   { role = "AXWebArea" } }
+    assert.are.same({ "AXStaticText", "Drop your logo here" }, { core.clickTarget(zone) })
+    assert.is_true(core.uploadClickAllowed(core.clickTarget(zone)))
+    assert.is_nil(core.clickTarget({}))
   end)
 end)
 
