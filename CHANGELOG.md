@@ -31,6 +31,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- Renamed from deepgram-dictation to **grandma-yawn**, the voice of
+  [grandma](https://github.com/anshulforyou/grandma), with an animated header made from grandma's
+  mascot. Existing installs keep working: the Hammerspoon module, Keychain entries and support
+  folder keep their names.
 - The badge says Listening as soon as the key is down (no more "Connecting mic").
 - The dictation stays on the clipboard after pasting (`restoreClipboard` now defaults to `false`),
   so ⌘V still has it when focus moved while you spoke.

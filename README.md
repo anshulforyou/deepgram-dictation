@@ -1,8 +1,17 @@
-# deepgram-dictation
+<p align="center">
+  <img src="assets/grandma-yawn.gif" width="480" alt="grandma knitting your voice into text" />
+</p>
 
-**Hold a key, speak, let go. Your words appear wherever your cursor is.**
-**Join a Zoom or Google Meet call and it offers to transcribe it. Claude files every transcript
-into the right folder.**
+<h1 align="center">grandma-yawn</h1>
+<p align="center"><b>Hold a key, speak, let go. Your words appear wherever your cursor is.</b></p>
+
+**Join a Zoom or Google Meet call and it offers to transcribe it. Hold Fn+Control and ask grandma
+about what's on your screen.**
+
+grandma-yawn is the voice of [grandma](https://github.com/anshulforyou/grandma), the memory layer
+for Claude Code. It works on its own, and with a grandma memory home it does more: meetings are
+filed into the right sweater with a memory proposal, names you use are spelled right, and screen
+questions are answered with what grandma knows about you. Formerly `deepgram-dictation`.
 
 A small, open-source dictation and meeting-transcription tool for macOS. It works much like Wispr Flow, but
 uses your own [Deepgram](https://deepgram.com) API key. It runs inside
@@ -55,8 +64,8 @@ app, and no account other than your Deepgram one.
 ## Install
 
 ```sh
-git clone https://github.com/anshulforyou/deepgram-dictation.git
-cd deepgram-dictation
+git clone https://github.com/anshulforyou/grandma-yawn.git
+cd grandma-yawn
 ./install.sh
 ```
 
