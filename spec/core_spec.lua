@@ -676,7 +676,7 @@ describe("screen questions", function()
 
     it("asks for the answer in a fixed shape", function()
       assert.are.equal("json_schema", body.output_config.format.type)
-      assert.are.same({ "insert", "answer" }, body.output_config.format.schema.properties.kind.enum)
+      assert.are.same({ "insert", "answer", "fill" }, body.output_config.format.schema.properties.kind.enum)
       assert.are.equal("low", body.output_config.effort)
     end)
 
@@ -808,3 +808,268 @@ describe("screen questions", function()
     end)
   end)
 end)
+
+describe("filling a form", function()
+  local fields = {
+    { label = "Title", value = "Nowhere Suit", skip = false },
+    { label = "Price", value = "", skip = true },
+  }
+
+  describe("parseScreenAnswer with a fill plan", function()
+    local plan = '{"kind":"fill","text":"2 fields","fields":[...]}'
+    local function decode(s)
+      if s == plan then
+        return { kind = "fill", text = " 2 fields ", fields = {
+          { label = " Title ", value = "Nowhere Suit", skip = false },
+          { label = "Price", value = "  ", skip = false },
+          { label = "", value = "x", skip = false },
+          "junk",
+        } }
+      end
+      if s == "empty" then return { kind = "fill", text = "x", fields = {} } end
+      error("not json")
+    end
+    local function reply(text) return { stop_reason = "end_turn", content = { { type = "text", text = text } } } end
+
+    it("keeps well-formed fields and skips ones without a value", function()
+      assert.are.same({ kind = "fill", text = "2 fields", fields = {
+        { label = "Title", value = "Nowhere Suit", skip = false },
+        { label = "Price", value = "  ", skip = true },
+      } }, core.parseScreenAnswer(reply(plan), decode))
+    end)
+
+    it("shows a plan with no fields as an answer", function()
+      assert.are.equal("answer", core.parseScreenAnswer(reply("empty"), decode).kind)
+    end)
+  end)
+
+  describe("checkFillAction", function()
+    it("types only the values the user confirmed", function()
+      assert.is_true(core.checkFillAction("type", { text = "Nowhere Suit" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "Nowhere Suit\n" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "my password" }, fields))
+      assert.is_false(core.checkFillAction("type", { text = "" }, fields), "a skipped field's empty value")
+    end)
+
+    it("never presses Return or shortcuts, but can move between fields", function()
+      assert.is_true(core.checkFillAction("key", { text = "Tab" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "shift+tab" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "cmd+a" }, fields))
+      assert.is_true(core.checkFillAction("key", { text = "super+a" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "Return" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "KP_Enter" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "cmd+w" }, fields))
+      assert.is_false(core.checkFillAction("key", { text = "backspace", ["repeat"] = 99 }, fields))
+    end)
+
+    it("refuses actions that are switched off", function()
+      for _, name in ipairs({ "right_click", "left_click_drag", "hold_key", "left_mouse_down", "made_up" }) do
+        assert.is_false(core.checkFillAction(name, {}, fields), name)
+      end
+      assert.is_true(core.checkFillAction("left_click", { coordinate = { 1, 2 } }, fields))
+      assert.is_true(core.checkFillAction("screenshot", {}, fields))
+    end)
+  end)
+
+  it("scales its caps to the plan", function()
+    local five = {}
+    for i = 1, 5 do five[i] = { label = "F" .. i, value = "x", skip = false } end
+    assert.are.same({ 40, 90 }, { core.fillLimits(five) })
+    table.insert(five, { label = "Image", value = "", skip = false, file = { id = "i" } })
+    table.insert(five, { label = "Skipped", value = "", skip = true })
+    assert.are.same({ 50, 114 }, { core.fillLimits(five) })
+    local many = {}
+    for i = 1, 40 do many[i] = { label = "F" .. i, value = "x", skip = false } end
+    assert.are.same({ 80, 180 }, { core.fillLimits(many) })
+  end)
+
+  describe("fillClickAllowed", function()
+    it("clicks fields and pop-ups but never buttons, links or checkboxes", function()
+      assert.is_true(core.fillClickAllowed("AXTextField"))
+      assert.is_true(core.fillClickAllowed("AXPopUpButton"))
+      for _, role in ipairs({ "AXButton", "AXLink", "AXCheckBox", "AXMenuItem", "AXGroup" }) do
+        assert.is_false(core.fillClickAllowed(role), role)
+      end
+      assert.is_false(core.fillClickAllowed(nil))
+    end)
+
+    it("chooses an option only in a menu she opened", function()
+      assert.is_true(core.fillClickAllowed("AXMenuItem", nil, true))
+    end)
+
+    it("never touches a password field", function()
+      assert.is_false(core.fillClickAllowed("AXTextField", "AXSecureTextField"))
+    end)
+  end)
+
+  describe("fillFocusAllowed", function()
+    it("types and presses keys in fields", function()
+      assert.is_true(core.fillFocusAllowed("type", { text = "Trail Runner" }, "AXTextField"))
+      assert.is_true(core.fillFocusAllowed("key", { text = "space" }, "AXTextArea"))
+      assert.is_true(core.fillFocusAllowed("type", { text = "x" }, nil))
+    end)
+
+    it("never presses a focused button, link or checkbox with a typed space or Space", function()
+      for _, role in ipairs({ "AXButton", "AXLink", "AXCheckBox", "AXMenuItem" }) do
+        assert.is_false(core.fillFocusAllowed("type", { text = "Trail Runner" }, role), role)
+        assert.is_false(core.fillFocusAllowed("key", { text = "space" }, role), role)
+      end
+      assert.is_true(core.fillFocusAllowed("key", { text = "shift+tab" }, "AXButton"))
+    end)
+
+    it("never types into a password field", function()
+      assert.is_false(core.fillFocusAllowed("type", { text = "x" }, "AXTextField", "AXSecureTextField"))
+    end)
+  end)
+
+  describe("coordinates", function()
+    it("maps screenshot pixels to points on the right display", function()
+      local frame = { x = -1920, y = -233, w = 1920, h = 1080 }
+      assert.are.same({ x = -1820, y = -33 }, core.fillPoint({ 100, 200 }, frame, 1))
+      assert.are.same({ x = 200, y = 400 }, core.fillPoint({ 100, 200 }, { x = 0, y = 0, w = 3440, h = 1440 }, 0.5))
+    end)
+
+    it("refuses points outside the display or malformed ones", function()
+      local frame = { x = 0, y = 0, w = 100, h = 100 }
+      assert.is_nil(core.fillPoint({ 101, 5 }, frame, 1))
+      assert.is_nil(core.fillPoint({ -1, 5 }, frame, 1))
+      assert.is_nil(core.fillPoint({ "a", 5 }, frame, 1))
+      assert.is_nil(core.fillPoint(nil, frame, 1))
+    end)
+
+    it("scales screens down only when they are too big to send", function()
+      assert.are.equal(1, core.fillScale(1920, 1080))
+      assert.are.equal(1, core.fillScale(1512, 982))
+      local scale = core.fillScale(5120, 2880)
+      assert.is_true(5120 * scale <= core.FILL_MAX_EDGE)
+      assert.is_true(5120 * scale * 2880 * scale <= core.FILL_MAX_PIXELS + 1)
+    end)
+  end)
+
+  describe("requests and results", function()
+    local body = core.fillRequest(core.mergeConfig(), "FILL PROMPT", fields, "IMG")
+
+    it("uses the computer toolset with the risky actions switched off", function()
+      local toolset = body.tools[1]
+      assert.are.equal("computer_toolset_20260801", toolset.type)
+      assert.is_nil(toolset.name)
+      for _, name in ipairs(core.FILL_DISABLED) do assert.is_false(toolset.configs[name].enabled, name) end
+      assert.is_nil(toolset.configs.left_click)
+    end)
+
+    it("starts from the confirmed plan and a screenshot, leaving out skipped fields", function()
+      local content = body.messages[1].content
+      assert.truthy(content[1].text:find("- Title: Nowhere Suit", 1, true))
+      assert.is_nil(content[1].text:find("Price", 1, true))
+      assert.are.equal("IMG", content[2].source.data)
+    end)
+
+    it("names the toolset on every result", function()
+      assert.are.same({ type = "tool_result", tool_use_id = "t1", toolset_name = "computer", content = "OK" },
+        core.fillResult("t1", "OK"))
+      assert.is_true(core.fillResult("t1", "no", true).is_error)
+      assert.are.equal("image", core.fillImage("t2", "DATA").content[1].type)
+    end)
+
+    it("reads the computer actions out of a response", function()
+      local resp = { content = {
+        { type = "thinking", thinking = "" },
+        { type = "tool_use", id = "a", name = "left_click", toolset_name = "computer",
+          input = { coordinate = { 1, 2 } } },
+        { type = "tool_use", id = "b", name = "open_memory", input = {} },
+        { type = "tool_use", id = "c", name = "screenshot", toolset_name = "computer" },
+      } }
+      assert.are.same({ { id = "a", name = "left_click", input = { coordinate = { 1, 2 } }, computer = true },
+                        { id = "b", name = "open_memory", input = {}, computer = false },
+                        { id = "c", name = "screenshot", input = {}, computer = true } }, core.fillActions(resp))
+    end)
+
+    it("parses keys", function()
+      assert.are.same({ { "shift" }, "tab" }, { core.fillKey("Shift+Tab") })
+      assert.are.same({ { "cmd" }, "a" }, { core.fillKey("super+a") })
+    end)
+  end)
+end)
+
+describe("uploading a file from memory", function()
+  local images = {
+    { id = "img-1", path = "/m/acme/brand/hero-wide.jpg", name = "hero-wide.jpg", width = 1200, height = 630,
+      note = "hero-wide.jpg is the sharing image", thumb = "THUMB1" },
+    { id = "img-2", path = "/m/acme/brand/logo.png", name = "logo.png", width = 512, height = 512, note = "",
+      thumb = "" },
+  }
+  local fields = core.fillFields({
+    { label = "Title", value = "Trailrunner 2", upload = "", skip = false },
+    { label = "Sharing image", value = "", upload = "img-1", skip = false },
+    { label = "Logo", value = "", upload = "img-9", skip = false },
+  }, images)
+
+  it("turns an upload field into the confirmed file, and skips one naming an image it wasn't shown", function()
+    assert.are.same({ id = "img-1", path = "/m/acme/brand/hero-wide.jpg", name = "hero-wide.jpg" }, fields[2].file)
+    assert.is_false(fields[2].skip)
+    assert.is_true(fields[3].skip)
+    assert.is_nil(fields[3].file)
+  end)
+
+  it("sends each memory image as what memory says about it, then its thumbnail", function()
+    local blocks = core.imageBlocks(images)
+    assert.are.equal(2, #blocks, "an image without a thumbnail is left out")
+    assert.are.equal('<memory_image id="img-1" file="hero-wide.jpg" size="1200x630">'
+      .. "hero-wide.jpg is the sharing image</memory_image>", blocks[1].text)
+    assert.are.equal("THUMB1", blocks[2].source.data)
+    local body = core.screenRequest(core.mergeConfig(), "S", "q", "IMG", "image/jpeg", { images = images, memory = {} })
+    assert.are.equal("THUMB1", body.messages[1].content[2].source.data)
+  end)
+
+  it("offers upload_file only for confirmed files and tells Claude which field gets which", function()
+    local tools = core.fillTools(fields)
+    assert.are.equal("upload_file", tools[2].name)
+    assert.are.same({ "img-1" }, tools[2].input_schema.properties.file.enum)
+    assert.are.equal(1, #core.fillTools({ { label = "T", value = "x", skip = false } }))
+    assert.truthy(core.fillPlanText(fields):find("- Sharing image: upload file img-1 (hero-wide.jpg)", 1, true))
+  end)
+
+  it("uploads only confirmed files, at most twice each", function()
+    assert.is_true(core.checkFillAction("upload_file", { file = "img-1", coordinate = { 1, 1 } }, fields))
+    assert.is_false(core.checkFillAction("upload_file", { file = "img-9" }, fields))
+    assert.is_false(core.checkFillAction("upload_file", { file = "/etc/passwd" }, fields))
+    assert.is_true(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 1 }))
+    assert.is_false(core.checkFillAction("upload_file", { file = "img-1" }, fields, { ["img-1"] = 2 }))
+  end)
+
+  it("drags files only onto drop zones, never onto buttons or links", function()
+    assert.is_true(core.dropTarget("AXStaticText"))
+    assert.is_true(core.dropTarget("AXGroup"))
+    assert.is_false(core.dropTarget("AXButton"))
+    assert.is_false(core.dropTarget("AXLink"))
+    assert.is_false(core.dropTarget(nil))
+  end)
+
+  it("clicks upload buttons and drop zones, never anything that saves or publishes", function()
+    assert.is_true(core.uploadClickAllowed("AXButton", "Upload"))
+    assert.is_true(core.uploadClickAllowed("AXButton", "Choose image"))
+    assert.is_true(core.uploadClickAllowed("AXGroup", "Drop your logo here"))
+    assert.is_true(core.uploadClickAllowed("AXGroup", nil))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Upload & publish"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Save product"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Options"))
+    assert.is_false(core.uploadClickAllowed("AXCheckBox", "Add"))
+    assert.is_false(core.uploadClickAllowed("AXGroup", "Submit"))
+    assert.is_false(core.uploadClickAllowed("AXButton", "Add to cart"))
+  end)
+
+  it("treats text inside a button or link as that button or link", function()
+    local inLink = { { role = "AXStaticText", label = "Go live" }, { role = "AXLink", label = "Go live" },
+                     { role = "AXGroup" } }
+    assert.are.same({ "AXLink", "Go live" }, { core.clickTarget(inLink) })
+    assert.is_false(core.uploadClickAllowed(core.clickTarget(inLink)))
+    local inButton = { { role = "AXStaticText", label = "Choose image" }, { role = "AXButton" } }
+    assert.are.same({ "AXButton" }, { core.clickTarget(inButton) })
+    local zone = { { role = "AXStaticText", label = "Drop your logo here" }, { role = "AXGroup" },
+                   { role = "AXWebArea" } }
+    assert.are.same({ "AXStaticText", "Drop your logo here" }, { core.clickTarget(zone) })
+    assert.is_true(core.uploadClickAllowed(core.clickTarget(zone)))
+    assert.is_nil(core.clickTarget({}))
+  end)
+end)
+

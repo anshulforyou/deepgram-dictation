@@ -58,6 +58,9 @@ if ! "$REPO_DIR/recorder/build.sh" "$SUPPORT_DIR"; then
   echo "    Skipped: meeting transcription needs the Xcode Command Line Tools (xcode-select --install)." >&2
   echo "    Dictation still works. Re-run ./install.sh after installing them." >&2
 fi
+if ! "$REPO_DIR/dragger/build.sh" "$SUPPORT_DIR" >/dev/null; then
+  echo "    Skipped GrandmaDrag: filling drag-and-drop uploads needs the Xcode Command Line Tools." >&2
+fi
 
 if [[ ! -f "$HS_DIR/deepgram-dictionary.json" ]]; then
   cp "$REPO_DIR/dictionary.example.json" "$HS_DIR/deepgram-dictionary.json"

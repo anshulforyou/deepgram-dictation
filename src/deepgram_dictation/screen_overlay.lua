@@ -20,7 +20,7 @@ local THREAD_SPEED = 420 -- points per second
 local BREATH_SECONDS = 1.8
 local HAZE_LAYERS, HAZE_WIDTH, HAZE_ALPHA = 18, 90, 0.04 -- the glow reaches HAZE_WIDTH / 2 into the screen
 
-local glow, glowTimer, panel, panelKeys
+local glow, glowTimer, panel, panelKeys, pendingCancel
 
 -- Glow ---------------------------------------------------------------------------------------
 
@@ -116,24 +116,34 @@ end
 
 function M.closePanel(fade)
   if panelKeys then panelKeys:stop() panelKeys = nil end
+  -- A question closed any other way (the next dictation starting) counts as Esc.
+  local cancel = pendingCancel
+  pendingCancel = nil
   if panel then
     local c = panel
     panel = nil
     c:hide(fade or 0.15)
     hs.timer.doAfter(0.3, function() c:delete() end)
   end
+  if cancel then cancel() end
 end
 
 -- Shows `text` next to the mouse, on whichever display it is on now. `note` is the small line in
 -- the header ("Copied"). Closes on a click on the panel, on Esc, or when the next dictation starts.
-function M.showPanel(text, note, isError)
+-- With `keys` ({ onReturn, onEscape }) it asks: Return and Esc are answered here and never reach
+-- the app underneath (so Return can't submit a form), and a click counts as Esc. `pictures`
+-- ({ { path, caption } }) are shown under the text, so a file is seen before it is uploaded.
+local THUMB, CAPTION = 84, 18
+function M.showPanel(text, note, isError, keys, pictures)
+  pictures = pictures or {}
   M.closePanel()
   local frame = (hs.mouse.getCurrentScreen() or hs.screen.mainScreen()):frame()
   local body = styled(text, BODY_SIZE, isError and M.ROSE_LIGHT or PANEL_TEXT)
   local maxBody = math.floor(frame.h * 0.7) - HEADER - 3 * PAD
   local c = hs.canvas.new({ x = 0, y = 0, w = W, h = 100 })
   local bodyH = math.min(textHeight(c, text, W - 2 * PAD, isError), maxBody)
-  local h = PAD + HEADER + 10 + bodyH + PAD
+  local shelf = #pictures > 0 and (12 + THUMB + CAPTION) or 0
+  local h = PAD + HEADER + 10 + bodyH + shelf + PAD
   c:size({ w = W, h = h })
   c:topLeft(core.panelOrigin(hs.mouse.absolutePosition(), W, h, frame))
   c:appendElements({
@@ -148,13 +158,41 @@ function M.showPanel(text, note, isError)
       frame = { x = W - PAD - 200, y = PAD + 3, w = 200, h = HEADER } },
     { type = "text", text = body, frame = { x = PAD, y = PAD + HEADER + 10, w = W - 2 * PAD, h = bodyH } },
   })
+  local slot = math.floor((W - 2 * PAD) / math.max(1, math.min(#pictures, 4)))
+  for i, pic in ipairs(pictures) do
+    if i > 4 then break end
+    local x, y = PAD + (i - 1) * slot, PAD + HEADER + 10 + bodyH + 12
+    local image = hs.image.imageFromPath(pic.path)
+    if image then
+      c:appendElements({ type = "image", image = image, imageScaling = "scaleProportionally",
+                         frame = { x = x, y = y, w = math.min(slot - 10, THUMB * 1.9), h = THUMB } })
+    end
+    c:appendElements({ type = "text", text = styled(pic.caption or "", 11, PANEL_MUTED),
+                       frame = { x = x, y = y + THUMB + 2, w = slot - 10, h = CAPTION } })
+  end
   c:level(hs.canvas.windowLevels.floating)
   c:behavior({ "canJoinAllSpaces" })
-  c:mouseCallback(function(_, message) if message == "mouseUp" then M.closePanel() end end)
+  pendingCancel = keys and keys.onEscape
+  local function answer(fn)
+    pendingCancel = nil
+    M.closePanel(0)
+    if fn then fn() end
+  end
+  c:mouseCallback(function(_, message)
+    if message == "mouseUp" then answer(keys and keys.onEscape) end
+  end)
   c:show(0.15)
   panel = c
   panelKeys = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
-    if e:getKeyCode() == hs.keycodes.map.escape then M.closePanel() end
+    local code = e:getKeyCode()
+    if code == hs.keycodes.map.escape then
+      answer(keys and keys.onEscape)
+      return keys ~= nil
+    end
+    if keys and (code == hs.keycodes.map["return"] or code == hs.keycodes.map.padenter) then
+      answer(keys.onReturn)
+      return true
+    end
     return false
   end):start()
 end

@@ -215,6 +215,56 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(self.profile.read_text(), "PROFILE TEXT")
 
 
+class ImagesTest(unittest.TestCase):
+    """Memory images, with thumbnails stubbed out (sips is macOS only)."""
+
+    image_info = staticmethod(gc.image_info)
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.home = self.root / ".grandma"  # hidden, like the real one
+        (self.home / "acme" / "brand").mkdir(parents=True)
+        (self.home / "acme" / "brand" / "logo.png").write_bytes(b"png")
+        (self.home / "acme" / "brand" / "notes.md").write_text("not an image")
+        (self.home / "secrets").mkdir()
+        (self.home / "secrets" / "passport.jpg").write_bytes(b"jpg")
+        (self.root / "outside" / ".hidden").mkdir(parents=True)
+        (self.root / "outside" / ".hidden" / "x.png").write_bytes(b"png")
+        (self.root / "outside" / "real.png").write_bytes(b"png")
+        (self.home / "acme" / "brand" / "linked.png").symlink_to(self.root / "outside" / "real.png")
+        stub = mock.patch.object(gc, "image_info", return_value={"width": 1, "height": 1, "thumb": "T"})
+        stub.start()
+        self.addCleanup(stub.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def names(self, text):
+        return [i["name"] for i in gc.images(self.home, text)]
+
+    def test_images_in_a_folder_inside_the_grandma_home(self):
+        self.assertEqual(self.names("Brand images live in acme/brand/."), ["logo.png"])
+        self.assertEqual(self.names(f"Logo: {self.home}/acme/brand/logo.png"), ["logo.png"])
+
+    def test_never_secrets_hidden_folders_or_symlinks(self):
+        self.assertEqual(self.names("see secrets/passport.jpg and secrets/"), [])
+        self.assertEqual(self.names(f"{self.root}/outside/.hidden/x.png"), [])
+        self.assertEqual(self.names("acme/brand/linked.png"), [])
+        self.assertEqual(self.names("acme/../secrets/passport.jpg"), [])
+
+    def test_an_unreadable_folder_is_skipped_not_fatal(self):
+        locked = self.home / "acme" / "locked"
+        locked.mkdir()
+        with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            self.assertEqual(self.names("acme/locked/ and acme/brand/logo.png"), ["logo.png"])
+
+    def test_a_thumbnail_failure_leaves_the_image_without_one(self):
+        with mock.patch.object(gc.subprocess, "run", side_effect=FileNotFoundError("/usr/bin/sips")):
+            self.assertEqual(self.image_info(self.home / "acme" / "brand" / "logo.png"),
+                             {"width": 0, "height": 0, "thumb": ""})
+
+
 class CliTest(unittest.TestCase):
     def test_question_prints_json(self):
         with mock.patch("sys.stdout") as out:

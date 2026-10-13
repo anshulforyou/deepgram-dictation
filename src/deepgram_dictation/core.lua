@@ -441,13 +441,28 @@ end
 
 -- What grandma returns for a screen question: text to paste where the user is typing, or an
 -- answer to show them.
+-- answer, or fields grandma will fill in on screen once the user confirms.
 core.SCREEN_SCHEMA = {
   type = "object",
   properties = {
-    kind = { type = "string", enum = { "insert", "answer" } },
+    kind = { type = "string", enum = { "insert", "answer", "fill" } },
     text = { type = "string" },
+    fields = {
+      type = "array",
+      items = {
+        type = "object",
+        properties = {
+          label = { type = "string" },
+          value = { type = "string" },
+          upload = { type = "string" }, -- id of a memory image for an upload field, else ""
+          skip = { type = "boolean" },
+        },
+        required = { "label", "value", "upload", "skip" },
+        additionalProperties = false,
+      },
+    },
   },
-  required = { "kind", "text" },
+  required = { "kind", "text", "fields" },
   additionalProperties = false,
 }
 
@@ -489,6 +504,7 @@ function core.screenRequest(cfg, systemPrompt, question, image, mediaType, memor
       table.insert(content, { type = "text", text = string.format('<memory name="%s" kind="%s">\n%s\n</memory>',
         m.name, m.kind, m.text) })
     end
+    for _, block in ipairs(core.imageBlocks(memory.images)) do table.insert(content, block) end
     if #content > 0 then content[#content].cache_control = { type = "ephemeral" } end
     if memory.openable and #memory.openable > 0 then tools = { core.openMemoryTool(memory.openable) } end
   end
@@ -505,6 +521,21 @@ function core.screenRequest(cfg, systemPrompt, question, image, mediaType, memor
     tools = tools,
     messages = { { role = "user", content = content } },
   }
+end
+
+-- Memory images as content: for each, what memory says about it, then a small thumbnail, so
+-- Claude can choose which one an upload field wants by what it shows.
+function core.imageBlocks(images)
+  local out = {}
+  for _, img in ipairs(images or {}) do
+    if type(img.thumb) == "string" and img.thumb ~= "" then
+      table.insert(out, { type = "text", text = string.format(
+        '<memory_image id="%s" file="%s" size="%dx%d">%s</memory_image>', img.id, img.name,
+        tonumber(img.width) or 0, tonumber(img.height) or 0, img.note or "") })
+      table.insert(out, { type = "image", source = { type = "base64", media_type = "image/jpeg", data = img.thumb } })
+    end
+  end
+  return out
 end
 
 -- The open_memory calls in a response that stopped to use tools: { { id, name } }.
@@ -525,7 +556,13 @@ end
 function core.continueWithResults(body, resp, results)
   local content = {}
   for _, r in ipairs(results) do
-    table.insert(content, { type = "tool_result", tool_use_id = r.id, content = r.text, is_error = r.isError or nil })
+    local value = r.text
+    local pictures = core.imageBlocks(r.images)
+    if #pictures > 0 then
+      value = { { type = "text", text = r.text } }
+      for _, block in ipairs(pictures) do table.insert(value, block) end
+    end
+    table.insert(content, { type = "tool_result", tool_use_id = r.id, content = value, is_error = r.isError or nil })
   end
   table.insert(body.messages, { role = "assistant", content = resp.content })
   table.insert(body.messages, { role = "user", content = content })
@@ -534,7 +571,7 @@ end
 
 -- { kind, text } from a decoded Messages API response, or nil plus what went wrong. A reply
 -- that isn't the expected JSON is still shown, as an answer, rather than thrown away.
-function core.parseScreenAnswer(resp, decode)
+function core.parseScreenAnswer(resp, decode, images)
   if type(resp) ~= "table" then return nil, "unexpected response" end
   if resp.type == "error" then
     return nil, "api error: " .. tostring(type(resp.error) == "table" and resp.error.message or resp.error)
@@ -548,11 +585,295 @@ function core.parseScreenAnswer(resp, decode)
   local raw = table.concat(parts):match("^%s*(.-)%s*$")
   if raw == "" then return nil, "empty answer" end
   local ok, value = pcall(decode, raw)
+  if ok and type(value) == "table" and value.kind == "fill" then
+    local fields = core.fillFields(value.fields, images)
+    if #fields > 0 then
+      return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
+               fields = fields }
+    end
+  end
   if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
       and type(value.text) == "string" and value.text:match("%S") then
     return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$") }
   end
   return { kind = "answer", text = raw }
+end
+
+-- The well-formed fields of a fill plan: { { label, value, skip, file } }. An upload field names
+-- one of `images` (memory images offered with the question, by id) and gets its `file`
+-- ({ id, path, name }); one naming anything else, or a field with no value, is skipped.
+function core.fillFields(list, images)
+  local byId = {}
+  for _, img in ipairs(images or {}) do byId[img.id] = img end
+  local out = {}
+  for _, f in ipairs(type(list) == "table" and list or {}) do
+    if type(f) == "table" and type(f.label) == "string" and f.label:match("%S") then
+      local value = type(f.value) == "string" and f.value or ""
+      local img = type(f.upload) == "string" and f.upload ~= "" and byId[f.upload]
+      local field = { label = f.label:match("^%s*(.-)%s*$"), value = img and "" or value,
+                      skip = f.skip == true or not (img or value:match("%S")) }
+      if img then field.file = { id = img.id, path = img.path, name = img.name } end
+      table.insert(out, field)
+    end
+  end
+  return out
+end
+
+-- Filling a form on screen with Claude's computer-use toolset ---------------------------------
+
+-- The toolset members grandma may use. Everything else is switched off in the request and
+-- refused here too: no right or middle clicks, drags, raw mouse buttons or held keys.
+core.FILL_ACTIONS = {
+  screenshot = true, zoom = true, left_click = true, triple_click = true, type = true, key = true,
+  scroll = true, wait = true, cursor_position = true,
+}
+core.FILL_DISABLED = {
+  "right_click", "middle_click", "double_click", "left_click_drag", "mouse_move", "left_mouse_down",
+  "left_mouse_up", "hold_key",
+}
+-- Keys she may press. Return and Enter are left out on purpose: they submit forms.
+core.FILL_KEYS = {
+  tab = true, ["shift+tab"] = true, backspace = true, delete = true, up = true, down = true,
+  left = true, right = true, escape = true, ["cmd+a"] = true, space = true,
+}
+-- Hard caps on a fill, scaled to the plan: a 5-field form gets about the 40 actions and 90 s it
+-- needs, uploads and bigger forms more, never past 80 actions or 3 minutes.
+function core.fillLimits(fields)
+  local n = 0
+  for _, f in ipairs(fields or {}) do
+    if not f.skip then n = n + (f.file and 2 or 1) end
+  end
+  return math.min(80, 15 + 5 * n), math.min(180, 30 + 12 * n)
+end
+-- Sonnet 5.5's limits for an image in a tool result.
+core.FILL_MAX_EDGE = 2576
+core.FILL_MAX_PIXELS = 3600000
+
+function core.fillToolset()
+  local configs = {}
+  for _, name in ipairs(core.FILL_DISABLED) do configs[name] = { enabled = false } end
+  return { type = "computer_toolset_20260801", configs = configs }
+end
+
+-- Scale from screen points to screenshot pixels: 1 unless the screen is too big to send whole.
+function core.fillScale(w, h)
+  return math.min(1, core.FILL_MAX_EDGE / math.max(w, h), math.sqrt(core.FILL_MAX_PIXELS / (w * h)))
+end
+
+-- A screenshot coordinate as a global screen point, for a display with `frame` (points).
+function core.fillPoint(coordinate, frame, scale)
+  if type(coordinate) ~= "table" or type(coordinate[1]) ~= "number" or type(coordinate[2]) ~= "number" then
+    return nil
+  end
+  local x, y = coordinate[1] / scale, coordinate[2] / scale
+  if x < 0 or y < 0 or x > frame.w or y > frame.h then return nil end
+  return { x = frame.x + x, y = frame.y + y }
+end
+
+-- "shift+tab" as Hammerspoon mods and key: { "shift" }, "tab".
+function core.fillKey(text)
+  local parts = {}
+  for part in tostring(text):lower():gmatch("[^+]+") do table.insert(parts, (part:gsub("%s", ""))) end
+  local key = table.remove(parts)
+  local mods = {}
+  for _, m in ipairs(parts) do table.insert(mods, (m == "super" or m == "command") and "cmd" or m) end
+  return mods, key
+end
+
+-- Whether grandma may run this computer action, given the plan the user confirmed. Returns true,
+-- or false and why. Typing is limited to the confirmed values, so nothing on screen can make her
+-- type anything else.
+function core.checkFillAction(name, input, fields, uploaded)
+  input = type(input) == "table" and input or {}
+  if name == "upload_file" then
+    local file = core.fillUploads(fields)[input.file]
+    if not file then return false, "only the files the user confirmed can be uploaded" end
+    if ((uploaded or {})[input.file] or 0) >= 2 then return false, "that file was already tried twice" end
+    return true
+  end
+  if not core.FILL_ACTIONS[name] then return false, name .. " isn't allowed while filling" end
+  if name == "type" then
+    local text = type(input.text) == "string" and input.text or ""
+    for _, f in ipairs(fields or {}) do
+      if not f.skip and f.value == text then return true end
+    end
+    return false, "only the values the user confirmed can be typed"
+  end
+  if name == "key" then
+    local mods, key = core.fillKey(input.text)
+    local combo = (#mods > 0 and (table.concat(mods, "+") .. "+") or "") .. tostring(key)
+    if not core.FILL_KEYS[combo] then return false, "the " .. tostring(input.text) .. " key isn't allowed" end
+    if input["repeat"] ~= nil and (type(input["repeat"]) ~= "number" or input["repeat"] > 30) then
+      return false, "too many repeats"
+    end
+  end
+  return true
+end
+
+-- Accessibility roles grandma may click. Buttons, links, checkboxes (consent) and menu items
+-- are refused, so she can't save, submit, delete, publish or agree to anything. A menu item is
+-- allowed only in a menu she just opened from a pop-up or combo box (choosing an option).
+core.FILL_CLICK_ROLES = {
+  AXTextField = true, AXTextArea = true, AXComboBox = true, AXPopUpButton = true, AXSearchField = true,
+  AXRadioButton = true,
+}
+
+function core.fillClickAllowed(role, subrole, menuOpen)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  if core.FILL_CLICK_ROLES[role] then return true end
+  if role == "AXMenuItem" and menuOpen then return true end
+  return false, "clicking " .. tostring(role or "an unknown element") .. " isn't allowed"
+end
+
+-- A tool_result for a computer action (every one must name the toolset).
+function core.fillResult(id, content, isError)
+  return { type = "tool_result", tool_use_id = id, toolset_name = "computer", content = content,
+           is_error = isError or nil }
+end
+
+-- A tool_result for grandma's own tools (upload_file), which don't belong to the toolset.
+function core.toolResult(id, content, isError)
+  return { type = "tool_result", tool_use_id = id, content = content, is_error = isError or nil }
+end
+
+function core.fillImage(id, data)
+  return core.fillResult(id, {
+    { type = "image", source = { type = "base64", media_type = "image/jpeg", data = data } },
+  })
+end
+
+-- The actions in a response: { { id, name, input, computer } }, computer actions and uploads.
+function core.fillActions(resp)
+  local out = {}
+  for _, block in ipairs(type(resp) == "table" and type(resp.content) == "table" and resp.content or {}) do
+    if type(block) == "table" and block.type == "tool_use" then
+      local input = type(block.input) == "table" and block.input or {}
+      table.insert(out, { id = block.id, name = block.name, input = input,
+                          computer = block.toolset_name == "computer" })
+    end
+  end
+  return out
+end
+
+-- The confirmed plan as the user message that starts the fill.
+function core.fillPlanText(fields)
+  local lines = { "Fill in these fields on screen. Type each value exactly as written:" }
+  for _, f in ipairs(fields) do
+    if not f.skip and f.file then
+      table.insert(lines, string.format("- %s: upload file %s (%s) with upload_file", f.label, f.file.id, f.file.name))
+    elseif not f.skip then
+      table.insert(lines, string.format("- %s: %s", f.label, f.value))
+    end
+  end
+  return table.concat(lines, "\n")
+end
+
+-- The confirmed uploads: { [id] = { id, path, name } }.
+function core.fillUploads(fields)
+  local out = {}
+  for _, f in ipairs(fields or {}) do
+    if not f.skip and f.file then out[f.file.id] = f.file end
+  end
+  return out
+end
+
+-- Puts a confirmed file into an upload field or drop zone. The upload itself is done by
+-- screen_fill.lua (a file dialog, or a real drag), never by typing or clicking through Claude.
+function core.uploadTool(ids)
+  return {
+    name = "upload_file",
+    description = "Upload one of the confirmed files into the upload button or drop zone at `coordinate` "
+      .. "(screenshot pixels). Point at the upload button, or at the middle of the drop zone.",
+    input_schema = {
+      type = "object",
+      properties = {
+        file = { type = "string", enum = ids },
+        coordinate = { type = "array", items = { type = "number" } },
+      },
+      required = { "file", "coordinate" },
+      additionalProperties = false,
+    },
+  }
+end
+
+-- Words on an upload control. A button is clicked to upload only when its label reads like one
+-- of these and none of the refused ones: "Upload & publish" is refused.
+core.UPLOAD_WORDS = { "upload", "choose", "browse", "select", "add", "replace", "change", "attach", "drop", "drag" }
+core.UPLOAD_REFUSED = { "save", "submit", "publish", "send", "pay", "delete", "remove", "post", "confirm",
+                        "buy", "order", "checkout", "cart", "sign", "agree", "accept", "next", "continue", "done" }
+
+-- Roles a drop zone shows up as (Brave: a plain text element reading "Drop your logo here").
+-- Files are only ever dragged onto these, never onto buttons or links.
+core.DROP_ROLES = { AXGroup = true, AXStaticText = true, AXImage = true, AXWebArea = true, AXUnknown = true }
+
+function core.dropTarget(role) return core.DROP_ROLES[role] == true end
+
+-- Whether the upload click may go to an element with this role and label. Drop zones are plain
+-- page areas (groups, text, images); buttons and links need an upload label.
+function core.uploadClickAllowed(role, label)
+  local text = tostring(label or ""):lower()
+  for _, word in ipairs(core.UPLOAD_REFUSED) do
+    if text:find("%f[%a]" .. word) then return false, "the upload target reads \"" .. tostring(label) .. "\"" end
+  end
+  if role == "AXButton" or role == "AXLink" then
+    for _, word in ipairs(core.UPLOAD_WORDS) do
+      if text:find("%f[%a]" .. word) then return true end
+    end
+    return false, "that button isn't an upload button"
+  end
+  if core.dropTarget(role) then return true end
+  return false, "can't upload into " .. tostring(role or "an unknown element")
+end
+
+-- Roles that act when clicked or when Space is pressed on them.
+core.FILL_PRESSABLE = {
+  AXButton = true, AXLink = true, AXCheckBox = true, AXMenuItem = true, AXMenuButton = true,
+  AXDisclosureTriangle = true,
+}
+
+-- What a click at a point really lands on, from the element under it and its ancestors
+-- ({ { role, label } }, innermost first). Text and images inside a button or link (Chromium
+-- reports those first) count as that button or link, so its label is the one checked.
+function core.clickTarget(chain)
+  for _, el in ipairs(chain or {}) do
+    if core.FILL_PRESSABLE[el.role] then return el.role, el.label end
+  end
+  local first = (chain or {})[1] or {}
+  return first.role, first.label
+end
+
+-- Whether grandma may type (`name` "type") or press a key into the focused element. Typing a
+-- space or pressing Space on a button, link or checkbox would press it, so neither goes to one.
+function core.fillFocusAllowed(name, input, role, subrole)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  if not core.FILL_PRESSABLE[role] then return true end
+  local text = type(input) == "table" and input.text
+  if name == "key" and select(2, core.fillKey(text)) ~= "space" then return true end
+  return false, "the focus is on " .. role .. ", which typing would press"
+end
+
+function core.fillTools(fields)
+  local ids = {}
+  for id in pairs(core.fillUploads(fields)) do table.insert(ids, id) end
+  table.sort(ids)
+  local tools = { core.fillToolset() }
+  if #ids > 0 then table.insert(tools, core.uploadTool(ids)) end
+  return tools
+end
+
+function core.fillRequest(cfg, systemPrompt, fields, image)
+  return {
+    model = cfg.screenModel,
+    max_tokens = 4096,
+    thinking = { type = "adaptive" },
+    output_config = { effort = cfg.screenEffort },
+    system = { { type = "text", text = systemPrompt, cache_control = { type = "ephemeral" } } },
+    tools = core.fillTools(fields),
+    messages = { { role = "user", content = {
+      { type = "text", text = core.fillPlanText(fields) },
+      { type = "image", source = { type = "base64", media_type = "image/jpeg", data = image } },
+    } } },
+  }
 end
 
 -- Top-left corner for a `w` x `h` panel near `point`, kept inside `frame` with a margin.

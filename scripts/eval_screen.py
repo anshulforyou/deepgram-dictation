@@ -40,10 +40,18 @@ PROMPT = REPO / "src" / "deepgram_dictation" / "screen_prompt.txt"
 MAX_EDGE = 1920  # same as screen.lua
 JPEG_QUALITY = 60
 
-SCHEMA = {
+SCHEMA = {  # same as core.SCREEN_SCHEMA
     "type": "object",
-    "properties": {"kind": {"type": "string", "enum": ["insert", "answer"]}, "text": {"type": "string"}},
-    "required": ["kind", "text"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["insert", "answer", "fill"]},
+        "text": {"type": "string"},
+        "fields": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"label": {"type": "string"}, "value": {"type": "string"},
+                           "upload": {"type": "string"}, "skip": {"type": "boolean"}},
+            "required": ["label", "value", "upload", "skip"], "additionalProperties": False}},
+    },
+    "required": ["kind", "text", "fields"],
     "additionalProperties": False,
 }
 
@@ -79,6 +87,7 @@ def request_body(model, effort, system, question, image, memory=None):
             system_blocks.append({"type": "text", "text": "\n\n".join(about)})
         for m in memory.get("memory", []):
             content.append({"type": "text", "text": f'<memory name="{m["name"]}" kind="{m["kind"]}">\n{m["text"]}\n</memory>'})
+        content += image_blocks(memory.get("images", []))
         if content:
             content[-1]["cache_control"] = {"type": "ephemeral"}
         if memory.get("openable"):
@@ -104,7 +113,18 @@ def request_body(model, effort, system, question, image, memory=None):
     return body
 
 
-def memory_results(resp, opens, home, sent_chars=0):
+def image_blocks(images):
+    """Same as core.imageBlocks."""
+    out = []
+    for img in images:
+        if img.get("thumb"):
+            out.append({"type": "text", "text": f'<memory_image id="{img["id"]}" file="{img["name"]}" '
+                                                f'size="{img["width"]}x{img["height"]}">{img["note"]}</memory_image>'})
+            out.append({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": img["thumb"]}})
+    return out
+
+
+def memory_results(resp, opens, home, sent_chars=0, seen_images=None):
     """Tool results for the open_memory calls in `resp` (same as screen.lua), the names opened, and
     the number of opens so far."""
     results, opened = [], []
@@ -120,14 +140,19 @@ def memory_results(resp, opens, home, sent_chars=0):
         try:
             item = grandma_context.open_item(home, str(name), max(MIN_OPEN_CHARS, MEMORY_CHARS - sent_chars))
             opened.append(item["name"])
-            results.append({"type": "tool_result", "tool_use_id": block["id"], "content": item["text"]})
+            pictures = image_blocks(item.get("images", []))
+            if seen_images is not None:
+                seen_images += item.get("images", [])
+            content = [{"type": "text", "text": item["text"]}] + pictures if pictures else item["text"]
+            results.append({"type": "tool_result", "tool_use_id": block["id"], "content": content})
         except (grandma_context.ContextError, OSError) as e:
             results.append({"type": "tool_result", "tool_use_id": block["id"], "is_error": True, "content": str(e)})
     return results, opened, opens
 
 
-def parse_answer(resp):
-    """Same as core.parseScreenAnswer: (kind, text), or (None, why)."""
+def parse_answer(resp, images=()):
+    """Same as core.parseScreenAnswer: (kind, text), or (None, why). A fill plan's text is one
+    "label: value" line per field, with "[skip]" for a field it won't fill."""
     if resp.get("type") == "error":
         return None, f"api error: {resp.get('error', {}).get('message')}"
     if resp.get("stop_reason") == "refusal":
@@ -143,6 +168,18 @@ def parse_answer(resp):
         return "answer", raw
     if not isinstance(value, dict):
         return "answer", raw
+    if value.get("kind") == "fill":
+        lines = []
+        names = {img["id"]: img["name"] for img in images}
+        for f in value.get("fields") or []:
+            if isinstance(f, dict) and isinstance(f.get("label"), str) and f["label"].strip():
+                v = f.get("value") if isinstance(f.get("value"), str) else ""
+                upload = names.get(f.get("upload") or "")
+                skip = f.get("skip") is True or not (upload or v.strip())
+                shown = "[skip]" if skip else f"[upload {upload}]" if upload else v
+                lines.append(f"{f['label'].strip()}: {shown}")
+        if lines:
+            return "fill", "\n".join(lines)
     if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
         return value["kind"], value["text"].strip()
     return "answer", raw
@@ -165,6 +202,21 @@ def grade(case, kind, text, used=None):
     for word in case.get("exclude", []):
         if word.lower() in lower:
             problems.append(f"contains {word!r}")
+    if kind == "fill":
+        plan = {}
+        for line in text.splitlines():
+            label, _, value = line.partition(": ")
+            plan[label.strip().lower()] = value
+        def field(label):
+            return next((v for k, v in plan.items() if label.lower() in k), None)
+        for label, options in case.get("fill", {}).items():
+            value = field(label)
+            if value is None or value == "[skip]" or not any(o.lower() in value.lower() for o in options):
+                problems.append(f"{label} is {value!r}, expected one of {options}")
+        for label in case.get("skip", []):
+            value = field(label)
+            if value not in (None, "[skip]"):
+                problems.append(f"{label} was filled with {value!r} but the memory has no value for it")
     if case.get("check") == "password":
         if len(text.strip()) < 10 or not any(c.isdigit() for c in text):
             problems.append("password would not pass the form's rules")
@@ -186,6 +238,7 @@ def ask(case, key, model, effort, system, images, home):
     started = time.time()
     memory = grandma_context.context(home, case["question"]) if home else None
     used = [m["name"] for m in memory["memory"]] if memory else []
+    seen_images = list(memory.get("images", [])) if memory else []
     body = request_body(model, effort, system, case["question"], images[case["screen"]], memory)
     opens = 0
     while True:
@@ -193,12 +246,12 @@ def ask(case, key, model, effort, system, images, home):
         if resp.get("stop_reason") != "tool_use":
             break
         sent_chars = sum(len(m["text"]) for m in memory["memory"])
-        results, opened, opens = memory_results(resp, opens, home, sent_chars)
+        results, opened, opens = memory_results(resp, opens, home, sent_chars, seen_images)
         used += opened
         body["messages"] += [{"role": "assistant", "content": resp["content"]}, {"role": "user", "content": results}]
         if opens >= MAX_OPENS:
             body["tool_choice"] = {"type": "none"}
-    kind, text = parse_answer(resp)
+    kind, text = parse_answer(resp, seen_images)
     return kind, text, int((time.time() - started) * 1000), used
 
 

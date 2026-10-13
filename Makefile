@@ -2,7 +2,7 @@ LUAROCKS_BIN ?= $(HOME)/.luarocks/bin
 BUSTED   ?= $(shell command -v busted 2>/dev/null || echo $(LUAROCKS_BIN)/busted)
 LUACHECK ?= $(shell command -v luacheck 2>/dev/null || echo $(LUAROCKS_BIN)/luacheck)
 
-.PHONY: test test-lua test-python test-swift test-install test-integration eval-dictation eval-screen render-screens lint install uninstall
+.PHONY: test test-lua test-python test-swift test-install test-integration eval-dictation eval-screen render-screens test-fill lint install uninstall
 
 test: test-lua test-python test-swift test-install
 
@@ -32,13 +32,18 @@ eval-dictation:
 eval-screen:
 	python3 scripts/eval_screen.py
 
+# Fills a real form in Brave with grandma and checks what landed (calls Anthropic's API). Takes
+# over the mouse and keyboard for up to 90 s, so it's never run in CI.
+test-fill:
+	tests/integration/fill.sh
+
 # Re-renders tests/screens/*.html to the PNGs eval-screen uses (needs Chrome or Brave).
 render-screens:
 	scripts/render_screens.sh
 
 lint:
 	$(LUACHECK) src spec
-	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh
+	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh dragger/build.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh tests/integration/fill.sh
 
 install:
 	./install.sh

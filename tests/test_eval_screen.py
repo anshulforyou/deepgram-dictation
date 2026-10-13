@@ -31,6 +31,18 @@ class GradeTest(unittest.TestCase):
         self.assertTrue(ev.grade(case, "answer", "x", []))
         self.assertTrue(ev.grade(case, "answer", "x", ["garden-club"]))
 
+    def test_fill_plans(self):
+        case = {"kind": "fill", "fill": {"price": ["139"]}, "skip": ["sku"]}
+        self.assertEqual(ev.grade(case, "fill", "Title: Trailrunner 2\nPrice: $139\nSKU: [skip]"), [])
+        self.assertTrue(ev.grade(case, "fill", "Price: [skip]"))
+        self.assertTrue(ev.grade(case, "fill", "Price: 139\nSKU: TR2-001"))
+        reply = '{"kind": "fill", "text": "x", "fields": [{"label": "Price", "value": "139", "skip": false},' \
+                ' {"label": "SKU", "value": "", "skip": false}]}'
+        self.assertEqual(ev.parse_answer(self.reply_like(reply)), ("fill", "Price: 139\nSKU: [skip]"))
+
+    def reply_like(self, text):
+        return {"stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}
+
     def test_kind_any(self):
         self.assertEqual(ev.grade({"kind": "answer", "kind_any": True}, "insert", "x"), [])
 
@@ -65,7 +77,7 @@ class ParseAnswerTest(unittest.TestCase):
         import json
         for case in json.loads((ev.SCREENS / "cases.json").read_text()):
             self.assertTrue((ev.SCREENS / f"{case['screen']}.png").exists(), case["screen"])
-            self.assertIn(case["kind"], ("insert", "answer"))
+            self.assertIn(case["kind"], ("insert", "answer", "fill"))
 
 
 if __name__ == "__main__":
