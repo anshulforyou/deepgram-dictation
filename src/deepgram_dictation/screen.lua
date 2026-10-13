@@ -18,6 +18,8 @@ local TMP_PREFIX = "deepgram-dictation-screen-"
 -- Sweaters or projects Claude may open for one question. Given more, it opens more whether or not
 -- it needs them (seen in make eval-screen), at 2 to 3 s each, so after this it has to answer.
 local MAX_OPENS = 1
+local MEMORY_CHARS = 240000 -- memory per question in all, as in grandma_context.py
+local MIN_OPEN_CHARS = 20000 -- an opened item always gets at least this much
 
 -- Captures a rectangle (in points) to a JPEG no wider than MAX_EDGE: screencapture, then sips.
 local CAPTURE = [[
@@ -118,7 +120,7 @@ function M.ask(question, shot, done)
   end
   local started = hs.timer.secondsSinceEpoch()
   local finished, timer, body = false, nil, nil
-  local sent, opened, opens = {}, {}, 0
+  local sent, opened, opens, sentChars = {}, {}, 0, 0
   local function finish(answer, status, reason)
     if finished then return end
     finished = true
@@ -150,7 +152,7 @@ function M.ask(question, shot, done)
           text = "No more memory can be opened for this question. Answer with what you have." })
         return nextCall(i + 1)
       end
-      memory.open(call.name, function(block, err)
+      memory.open(call.name, math.max(MIN_OPEN_CHARS, MEMORY_CHARS - sentChars), function(block, err)
         if block then
           table.insert(opened, block.name)
           table.insert(results, { id = call.id, text = block.text })
@@ -189,7 +191,10 @@ function M.ask(question, shot, done)
   memory.context(question, function(context, err)
     if finished then return end
     if not context then log("no grandma memory for this question: %s", tostring(err)) end
-    for _, m in ipairs(context and context.memory or {}) do table.insert(sent, m.name) end
+    for _, m in ipairs(context and context.memory or {}) do
+      table.insert(sent, m.name)
+      sentChars = sentChars + #m.text
+    end
     body = core.screenRequest(cfg, instructions, question, shot.data, "image/jpeg", context)
     post()
   end)

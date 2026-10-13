@@ -25,6 +25,12 @@ class GradeTest(unittest.TestCase):
                          ["memory ['acme', 'spring-launch'], expected ['acme']"])
         self.assertEqual(ev.grade({"kind": "answer"}, "answer", "x", ["acme"]), [])
 
+    def test_memory_any(self):
+        case = {"kind": "answer", "memory_any": ["acme", "spring-launch"]}
+        self.assertEqual(ev.grade(case, "answer", "x", ["spring-launch"]), [])
+        self.assertTrue(ev.grade(case, "answer", "x", []))
+        self.assertTrue(ev.grade(case, "answer", "x", ["garden-club"]))
+
     def test_kind_any(self):
         self.assertEqual(ev.grade({"kind": "answer", "kind_any": True}, "insert", "x"), [])
 

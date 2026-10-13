@@ -58,15 +58,20 @@ def safe_file(f):
     return f.is_file() and not f.is_symlink() and not f.name.startswith(".") and not SECRET_FILE.search(f.name)
 
 
+def readable_dir(d):
+    """A real directory (not a symlink to one) that isn't, or doesn't lead to, the secrets folder."""
+    return d.is_dir() and not d.is_symlink() and d.name.lower() not in NEVER_READ_DIRS \
+        and d.resolve().name.lower() not in NEVER_READ_DIRS
+
+
 def sweaters(home):
     """Sweater directories, never the secrets folder even when it looks like one."""
-    return [d for d in sorted(home.iterdir())
-            if d.name.lower() not in NEVER_READ_DIRS and meeting_grandma.is_sweater(d)]
+    return [d for d in sorted(home.iterdir()) if readable_dir(d) and meeting_grandma.is_sweater(d)]
 
 
 def root_files(d):
     """The memory files at the root of `d` that are safe to read."""
-    if not d.is_dir() or d.name.lower() in NEVER_READ_DIRS:
+    if not readable_dir(d):
         return []
     return [f for f in sorted(d.glob("*.md")) if safe_file(f)]
 

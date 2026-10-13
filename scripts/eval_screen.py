@@ -8,7 +8,7 @@ library plus macOS's sips.
 
 Memory comes from a made-up grandma home (tests/screens/grandma), read by the app's own
 grandma_context.py, including the open_memory step. A case with "memory" lists the sweaters and
-projects that must be sent or opened for it ([] for none).
+projects that must be sent or opened for it ([] for none); "memory_any" accepts any of a few.
 
   python3 scripts/eval_screen.py
   python3 scripts/eval_screen.py --screen email --show
@@ -32,6 +32,7 @@ REPO = Path(__file__).resolve().parent.parent
 SCREENS = REPO / "tests" / "screens"
 GRANDMA = SCREENS / "grandma"
 MAX_OPENS = 1  # same as screen.lua
+MEMORY_CHARS, MIN_OPEN_CHARS = 240_000, 20_000  # same as screen.lua
 
 sys.path.insert(0, str(REPO / "src" / "deepgram_dictation"))
 import grandma_context  # noqa: E402
@@ -103,7 +104,7 @@ def request_body(model, effort, system, question, image, memory=None):
     return body
 
 
-def memory_results(resp, opens, home):
+def memory_results(resp, opens, home, sent_chars=0):
     """Tool results for the open_memory calls in `resp` (same as screen.lua), the names opened, and
     the number of opens so far."""
     results, opened = [], []
@@ -117,10 +118,10 @@ def memory_results(resp, opens, home):
                             "content": "No more memory can be opened for this question. Answer with what you have."})
             continue
         try:
-            item = grandma_context.open_item(home, str(name))
+            item = grandma_context.open_item(home, str(name), max(MIN_OPEN_CHARS, MEMORY_CHARS - sent_chars))
             opened.append(item["name"])
             results.append({"type": "tool_result", "tool_use_id": block["id"], "content": item["text"]})
-        except grandma_context.ContextError as e:
+        except (grandma_context.ContextError, OSError) as e:
             results.append({"type": "tool_result", "tool_use_id": block["id"], "is_error": True, "content": str(e)})
     return results, opened, opens
 
@@ -153,6 +154,8 @@ def grade(case, kind, text, used=None):
     problems = []
     if "memory" in case and used is not None and sorted(set(used)) != sorted(case["memory"]):
         problems.append(f"memory {sorted(set(used))}, expected {sorted(case['memory'])}")
+    if "memory_any" in case and used is not None and (not used or not set(used) <= set(case["memory_any"])):
+        problems.append(f"memory {sorted(set(used))}, expected some of {sorted(case['memory_any'])}")
     if kind != case["kind"] and not case.get("kind_any"):
         problems.append(f"kind {kind}, expected {case['kind']}")
     lower = text.lower()
@@ -189,7 +192,8 @@ def ask(case, key, model, effort, system, images, home):
         resp = post(body, key)
         if resp.get("stop_reason") != "tool_use":
             break
-        results, opened, opens = memory_results(resp, opens, home)
+        sent_chars = sum(len(m["text"]) for m in memory["memory"])
+        results, opened, opens = memory_results(resp, opens, home, sent_chars)
         used += opened
         body["messages"] += [{"role": "assistant", "content": resp["content"]}, {"role": "user", "content": results}]
         if opens >= MAX_OPENS:

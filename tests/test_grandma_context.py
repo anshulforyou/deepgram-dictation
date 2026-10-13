@@ -72,9 +72,70 @@ class RoutingTest(unittest.TestCase):
             self.assertNotIn(never, everything)
         self.assertNotIn("secrets", gc.context(self.home, "secrets")["openable"])
 
+    def project_with_source(self, source):
+        catalog = self.home / "acme" / "projects.md"
+        catalog.write_text(catalog.read_text() + f"\n## probe\n- what: probe\n- source: {source}\n")
+        return gc.open_item(self.home, "probe")["text"]
+
+    def test_a_source_must_be_a_claude_md_reached_safely(self):
+        outside = self.home.parent / "outside"
+        (outside / ".ssh").mkdir(parents=True)
+        (outside / ".ssh" / "CLAUDE.md").write_text("HIDDEN DIR")
+        (outside / "id_rsa").write_text("PRIVATE KEY")
+        (outside / "api-secrets").mkdir()
+        (outside / "api-secrets" / "CLAUDE.md").write_text("SECRET DIR")
+        (outside / "real").mkdir()
+        (outside / "real" / "CLAUDE.md").write_text("THROUGH LINK")
+        (self.home / "linked-dir").symlink_to(outside / "real")
+        for source, leak in ((str(outside / "id_rsa"), "PRIVATE KEY"), ("../outside/id_rsa", "PRIVATE KEY"),
+                             (str(outside / ".ssh" / "CLAUDE.md"), "HIDDEN DIR"),
+                             (str(outside / "api-secrets" / "CLAUDE.md"), "SECRET DIR"),
+                             ("linked-dir/CLAUDE.md", "THROUGH LINK")):
+            with self.subTest(source=source):
+                self.setUp_catalog()
+                self.assertNotIn(leak, self.project_with_source(source))
+
+    def setUp_catalog(self):
+        (self.home / "acme" / "projects.md").write_text(
+            "---\nscope: acme\n---\n\n## fund-raise\n- what: seed round\n- source: acme/projects/fund-raise/CLAUDE.md\n")
+
+    def test_symlinked_sweaters_are_never_read(self):
+        outside = self.home.parent / "vault"
+        outside.mkdir()
+        (outside / "facts.md").write_text("---\nscope: vault\n---\nVAULT")
+        (self.home / "vault").symlink_to(outside)
+        (self.home / "hidden").symlink_to(self.home / "secrets")
+        openable = gc.context(self.home, "x")["openable"]
+        self.assertNotIn("vault", openable)
+        self.assertNotIn("hidden", openable)
+
+    def test_catalog_sections_aliases_and_longest_names(self):
+        (self.home / "acme" / "projects.md").write_text(
+            "---\nscope: acme\n---\n\n## rainforest\n- what: a\n\n## rainforest-midnight (Project Midnight, Night Owl)\n"
+            "- what: b\n\n## Ended / inactive\nold stuff\n")
+        self.assertEqual(gc.context(self.home, "x")["openable"], ["acme", "rainforest", "rainforest-midnight", "garden"])
+        self.assertEqual(self.sent("rainforest midnight please"), [("rainforest-midnight", "project")])
+        self.assertEqual(self.sent("how is project midnight"), [("rainforest-midnight", "project")])
+        self.assertEqual(self.sent("the rainforest one"), [("rainforest", "project")])
+
+    def test_names_shared_by_two_items_are_made_unique(self):
+        (self.home / "garden" / "projects.md").write_text("---\nscope: garden\n---\n\n## acme\n- what: a garden thing\n")
+        openable = gc.context(self.home, "x")["openable"]
+        self.assertEqual(len(openable), len(set(openable)))
+        self.assertIn("garden/acme", openable)
+        self.assertEqual(gc.open_item(self.home, "garden/acme")["kind"], "project")
+
+    def test_an_opened_project_brings_its_sweater_facts_but_a_named_one_does_not(self):
+        self.assertIn("Trailrunner costs $139.", gc.open_item(self.home, "fund-raise")["text"])
+        self.assertNotIn("Trailrunner", gc.context(self.home, "the fund raise")["memory"][0]["text"])
+
+    def test_open_respects_the_budget_left(self):
+        self.assertTrue(gc.open_item(self.home, "acme", 30)["text"].endswith("[cut short]"))
+
     def test_catalog_has_descriptions_and_projects(self):
         ctx = gc.context(self.home, "x")
-        self.assertEqual(ctx["catalog"], "- acme: shoe company. Projects: fund-raise, spring-launch\n- garden")
+        self.assertEqual(ctx["catalog"], "- acme: shoe company\n  - project fund-raise: seed round\n"
+                                         "  - project spring-launch: launch\n- garden")
         self.assertEqual(ctx["openable"], ["acme", "fund-raise", "spring-launch", "garden"])
         self.assertEqual(ctx["profile"], "PROFILE TEXT")
 
@@ -104,20 +165,29 @@ class ProfileTest(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def age(self, path, seconds):
-        t = time.time() - seconds
-        os.utime(path, (t, t))
+    def stamp(self):
+        """Marks the profile as made from the current global memory."""
+        self.profile.write_text(f"---\nsources: {gc.sources_hash(self.home)}\n---\nPROFILE TEXT")
 
-    def test_stale_only_when_a_global_file_is_newer(self):
-        self.age(self.home / "global" / "identity.md", 100)
+    def test_stale_when_global_memory_changes_in_any_way(self):
+        self.stamp()
         self.assertFalse(gc.profile_stale(self.home))
-        self.age(self.profile, 200)
+        identity = self.home / "global" / "identity.md"
+        identity.write_text(identity.read_text() + "New fact.\n")
+        self.assertTrue(gc.profile_stale(self.home))
+        self.stamp()
+        (self.home / "global" / "style.md").write_text("Short sentences.")
+        self.assertTrue(gc.profile_stale(self.home))
+        self.stamp()
+        (self.home / "global" / "style.md").unlink()
+        self.assertTrue(gc.profile_stale(self.home), "deleting a file must remove its facts too")
+
+    def test_stale_when_missing_or_unstamped(self):
         self.assertTrue(gc.profile_stale(self.home))
         self.profile.unlink()
         self.assertTrue(gc.profile_stale(self.home))
 
     def test_refresh_writes_a_generated_profile_from_global_only(self):
-        self.profile.unlink()
         reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": "## Who\n- Sam"}]}
         with mock.patch.object(gc.nfg, "read_api_key", return_value="k"), \
                 mock.patch.object(gc.nfg, "post_messages", return_value=reply) as post:
@@ -128,15 +198,16 @@ class ProfileTest(unittest.TestCase):
         text = self.profile.read_text()
         self.assertTrue(text.startswith("---\nscope: global\ntype: profile\n"))
         self.assertTrue(text.endswith("## Who\n- Sam\n"))
+        self.assertFalse(gc.profile_stale(self.home))
+        self.assertEqual(list(self.profile.parent.glob("*.tmp")), [])
 
     def test_refresh_does_nothing_when_current(self):
-        self.age(self.home / "global" / "identity.md", 100)
+        self.stamp()
         with mock.patch.object(gc.nfg, "post_messages") as post:
             self.assertEqual(gc.refresh_profile(self.home, "k", "m"), "profile is current")
         post.assert_not_called()
 
     def test_a_failed_refresh_keeps_the_old_profile(self):
-        self.age(self.profile, 200)
         with mock.patch.object(gc.nfg, "read_api_key", return_value="k"), \
                 mock.patch.object(gc.nfg, "post_messages", return_value={"stop_reason": "max_tokens"}):
             with self.assertRaises(gc.ContextError):

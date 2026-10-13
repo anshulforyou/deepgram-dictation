@@ -7,7 +7,8 @@ local M = {}
 
 local MODULE_DIR = hs.configdir .. "/deepgram_dictation"
 
-local cfg, refresher
+local cfg, refresher, refreshFailedAt
+local RETRY_AFTER = 60 * 60 -- after a failed profile refresh, don't pay for another on every question
 -- Tasks in flight: an hs.task nothing refers to can be collected before it ends, and its
 -- callback never runs. Only written, never read, on purpose.
 local running = {} -- luacheck: ignore 241
@@ -30,16 +31,21 @@ local function run(extra, done)
   if not py then return done(nil, "python3 not found") end
   -- Output is read as it comes: a sweater's memory is bigger than the pipe holds, and without a
   -- stream callback the script blocks on its write and never exits.
-  local out, task = {}, nil
+  local out, errs, task = {}, {}, nil
   task = hs.task.new(py, function(code, stdout, stderr)
     running[task] = nil
-    if code ~= 0 then return done(nil, (tostring(stderr):gsub("%s+$", ""))) end
     table.insert(out, stdout or "")
+    table.insert(errs, stderr or "")
+    if code ~= 0 then
+      local err = table.concat(errs):gsub("%s+$", ""):match("[^\n]*$") -- the last line says why
+      return done(nil, err ~= "" and err or "grandma memory could not be read")
+    end
     local ok, value = pcall(hs.json.decode, table.concat(out))
     if ok and type(value) == "table" then return done(value) end
     done(nil, "grandma_context.py printed something unexpected")
-  end, function(_, stdout)
+  end, function(_, stdout, stderr)
     table.insert(out, stdout or "")
+    table.insert(errs, stderr or "")
     return true
   end, args(extra))
   running[task] = true
@@ -54,10 +60,12 @@ function M.enabled() return cfg ~= nil and cfg.screenAssist and cfg.grandmaHome 
 -- Rewrites the profile in the background when a global memory file has changed since.
 function M.refreshProfile()
   if not M.enabled() or refresher then return end
+  if refreshFailedAt and os.time() - refreshFailedAt < RETRY_AFTER then return end
   local py = python()
   if not py then return end
   refresher = hs.task.new(py, function(code, stdout, stderr)
     refresher = nil
+    refreshFailedAt = code ~= 0 and os.time() or nil
     local out = tostring(code == 0 and stdout or stderr):gsub("%s+$", "")
     if code ~= 0 or out ~= "profile is current" then log("%s", out) end
   end, args({ "--refresh-profile", "--keychain-name", cfg.anthropicKeychainName, "--model", cfg.cleanupModel }))
@@ -74,9 +82,12 @@ function M.teardown()
 end
 
 -- The profile, catalog and named memory for `question`: done(context) or done(nil, err).
-function M.context(question, done) run({ "--question", question }, done) end
+-- (The `--flag=value` form, so a question starting with "-" isn't taken for a flag.)
+function M.context(question, done) run({ "--question=" .. question }, done) end
 
--- One sweater's or project's memory: done({ name, kind, text }) or done(nil, err).
-function M.open(name, done) run({ "--open", tostring(name) }, done) end
+-- One sweater's or project's memory, within `maxChars`: done({ name, kind, text }) or done(nil, err).
+function M.open(name, maxChars, done)
+  run({ "--open=" .. tostring(name), "--max-chars=" .. tostring(math.floor(maxChars)) }, done)
+end
 
 return M
