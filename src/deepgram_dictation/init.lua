@@ -17,6 +17,7 @@ local voice = require("deepgram_dictation.voice")
 local badge = require("deepgram_dictation.badge")
 local sounds = require("deepgram_dictation.sounds")
 local tasks = require("deepgram_dictation.tasks")
+local screenMemory = require("deepgram_dictation.screen_memory")
 
 local M = { core = core, meeting = meeting }
 
@@ -169,6 +170,105 @@ local function fillForm(answer, s, recording, record)
   end)
 end
 
+-- The memory a screen question was answered with (sent or opened), read again whole for a page
+-- grandma works on: done({ blocks = { { name, text } }, images }).
+local WORK_MEMORY_CHARS = 240000
+local function workMemory(info, done)
+  local names, seen = {}, {}
+  for _, list in ipairs({ info.memory or {}, info.opened or {} }) do
+    for _, n in ipairs(list) do
+      if not seen[n] then seen[n] = true table.insert(names, n) end
+    end
+  end
+  local out = { blocks = {}, images = {} }
+  local function nextName(i)
+    local name = names[i]
+    if not name then return done(out) end
+    screenMemory.open(name, WORK_MEMORY_CHARS / #names, function(block)
+      if block then
+        table.insert(out.blocks, { name = block.name, text = block.text })
+        for _, img in ipairs(block.images or {}) do table.insert(out.images, img) end
+      end
+      nextName(i + 1)
+    end)
+  end
+  nextName(1)
+end
+
+-- Grandma works on the page on screen: she looks through it, proposes every change, and once the
+-- user says yes makes them. Nothing is typed or clicked before that yes.
+local function workOnPage(answer, s, recording, record, info)
+  local scr = s.shot.screen
+  local function ended(summary, result, title)
+    overlay.hideGlow()
+    if not recorder then setIndicator(nil) end
+    local sound = ({ done = "done", error = "error" })[result.status]
+    if sound then sounds.play(sound) end
+    if result.status == "done" then
+      overlay.showPanel(summary or "Done.", title)
+    else
+      overlay.showPanel((result.status == "stopped" and "Stopped: " or "Couldn't do it: ") .. tostring(result.reason)
+        .. ". Anything already changed is still there.", result.status == "stopped" and "Stopped" or "Couldn't do it",
+        true)
+    end
+  end
+  local function make(fields)
+    overlay.showGlow(scr)
+    setIndicator("filling", 0)
+    sounds.play("fill")
+    screenFill.run(fields, scr, function(n)
+      if not recorder then setIndicator("filling", n) end
+    end, function(summary, result)
+      ended(summary, result, "Done. Check it, then publish")
+      record.screen.work = { status = result.status, reason = result.reason, ms = result.ms,
+                             actions = result.actions, summary = summary }
+      saveScreen(recording, record)
+    end, { mode = "work", goal = answer.text })
+  end
+  setIndicator("looking")
+  workMemory(info, function(mem)
+    if recorder then return end -- a new dictation started meanwhile
+    overlay.showGlow(scr)
+    setIndicator("looking")
+    screenFill.run({}, scr, function()
+      if not recorder then setIndicator("looking") end
+    end, function(proposal, result)
+      record.screen.survey = { status = result.status, reason = result.reason, ms = result.ms,
+                               actions = result.actions }
+      if result.status ~= "proposed" then
+        ended(type(proposal) == "string" and proposal or nil, result, "Looked through it")
+        return saveScreen(recording, record)
+      end
+      overlay.hideGlow()
+      if not recorder then setIndicator(nil) end
+      local fields, summary = core.parseProposal(proposal, mem.images)
+      record.screen.proposal = { summary = summary, fields = fields }
+      local changes = 0
+      for _, f in ipairs(fields) do if not f.skip then changes = changes + 1 end end
+      if changes == 0 then
+        sounds.play("answer")
+        overlay.showPanel(summary ~= "" and summary or "She found nothing to change.", "Nothing to change")
+        return saveScreen(recording, record)
+      end
+      sounds.play("answer")
+      local pictures = {}
+      for _, f in ipairs(fields) do
+        if f.file and not f.skip then table.insert(pictures, { path = f.file.path, caption = f.label }) end
+      end
+      overlay.showPanel(core.proposalText(fields, summary), "Make these changes?", false, {
+        onReturn = function()
+          record.screen.confirmed = true
+          make(fields)
+        end,
+        onEscape = function()
+          record.screen.confirmed = false
+          saveScreen(recording, record)
+        end,
+      }, pictures)
+    end, { mode = "survey", goal = answer.text, memory = mem })
+  end)
+end
+
 -- Asks grandma the transcribed question about the captured screen. Text she writes is pasted;
 -- an answer is shown in a panel. Both end up on the clipboard, and so does the question when
 -- she can't answer, so nothing said is lost.
@@ -179,6 +279,7 @@ local function answerScreen(raw, recording, record, s)
     record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
                       kind = answer and answer.kind, answer = answer and answer.text,
                       fields = answer and answer.fields, memory = info.memory, opened = info.opened }
+    if answer and answer.kind == "work" then return workOnPage(answer, s, recording, record, info) end
     if answer and answer.kind == "task" and tasks.enabled() then
       record.screen.task = answer.task
       local function begin()

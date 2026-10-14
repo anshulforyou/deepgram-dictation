@@ -29,7 +29,7 @@ local STITCH, MAX_STITCHES = 10, 8 -- spacing in points, and how many show befor
 local MORPH, APPEAR, VANISH = 0.35, 0.15, 0.18 -- seconds
 local TICK = 1 / 50
 
-local canvas, kind, step, anim
+local canvas, kind, step, anim, suspended
 local gifs = {}
 
 local function rgb(hex, alpha)
@@ -193,6 +193,7 @@ end
 function M.show(newKind, n)
   if not WIDTH[newKind] then return end
   if not canvas then M.setup() end
+  suspended = nil
   local from = canvas:isShowing() and kind or nil
   local was = step
   kind, step = newKind, n or 0
@@ -232,6 +233,21 @@ function M.hide(now)
 end
 
 function M.kind() return kind end
+
+-- Takes the badge off screen for a moment, with no animation, while grandma captures the screen
+-- during a fill; resume puts it back as it was unless it was hidden or changed meanwhile.
+function M.suspend()
+  if canvas and canvas:isShowing() and not anim then
+    suspended = kind
+    canvas:hide()
+  end
+end
+
+function M.resume()
+  local was = suspended
+  suspended = nil
+  if was and canvas and kind == was and not canvas:isShowing() then canvas:show() end
+end
 
 function M.teardown()
   M.hide(true)

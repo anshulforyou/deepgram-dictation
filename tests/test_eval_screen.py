@@ -92,7 +92,7 @@ class ParseAnswerTest(unittest.TestCase):
         import json
         for case in json.loads((ev.SCREENS / "cases.json").read_text()):
             self.assertTrue((ev.SCREENS / f"{case['screen']}.png").exists(), case["screen"])
-            self.assertIn(case["kind"], ("insert", "answer", "fill", "task"))
+            self.assertIn(case["kind"], ("insert", "answer", "fill", "task", "work"))
 
 
 if __name__ == "__main__":

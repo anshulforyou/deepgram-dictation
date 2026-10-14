@@ -501,7 +501,7 @@ end
 core.SCREEN_SCHEMA = {
   type = "object",
   properties = {
-    kind = { type = "string", enum = { "insert", "answer", "fill", "task" } },
+    kind = { type = "string", enum = { "insert", "answer", "fill", "task", "work" } },
     text = { type = "string" },
     fields = {
       type = "array",
@@ -660,6 +660,10 @@ function core.parseScreenAnswer(resp, decode, images)
       return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
                fields = fields }
     end
+  end
+  if ok and type(value) == "table" and value.kind == "work" and type(value.text) == "string"
+      and value.text:match("%S") then
+    return { kind = "work", text = value.text:match("^%s*(.-)%s*$") }
   end
   if ok and type(value) == "table" and value.kind == "task" then
     local task = core.taskFrom(value.task)
@@ -948,6 +952,191 @@ function core.fillRequest(cfg, systemPrompt, fields, image)
     } } },
   }
 end
+
+-- Working on a page on screen: grandma first looks through it (survey: screenshots and scrolling
+-- only) and proposes every change, then, once the user confirms, makes them (work). Work can
+-- click what fill can't (buttons, links, tabs, menus, to select blocks and open panels) and save
+-- drafts, but never anything that publishes, sends, pays or deletes. Typing stays limited to the
+-- confirmed text, as in fill.
+
+core.SURVEY_ACTIONS = { screenshot = true, zoom = true, scroll = true, wait = true, cursor_position = true }
+core.WORK_ACTIONS = {
+  screenshot = true, zoom = true, left_click = true, double_click = true, triple_click = true, type = true,
+  key = true, scroll = true, wait = true, cursor_position = true,
+}
+-- Keys beyond fill's: undo, save (a draft), and Return or Shift+Return, which screen_fill.lua only
+-- lets through while a multi-line text box has the focus.
+core.WORK_KEYS = { ["cmd+z"] = true, ["cmd+s"] = true, ["return"] = true, ["shift+return"] = true }
+core.NEWLINE_KEYS = { ["return"] = true, ["shift+return"] = true }
+-- Words on something she must never click while working: whatever goes live, goes out, costs
+-- money, or can't be undone.
+core.WORK_REFUSED = { "publish", "unpublish", "update", "deploy", "go live", "launch", "submit", "send", "pay",
+                      "buy", "checkout", "order", "purchase", "delete", "remove", "trash", "discard", "archive",
+                      "share", "invite", "sign out", "log out", "logout", "post", "schedule", "upgrade" }
+
+function core.workLimits(mode)
+  if mode == "survey" then return 40, 150 end
+  return 300, 1200
+end
+
+function core.workToolset(mode)
+  local allowed = mode == "survey" and core.SURVEY_ACTIONS or core.WORK_ACTIONS
+  local configs = {}
+  for _, name in ipairs({ "left_click", "triple_click", "double_click", "type", "key", "right_click", "middle_click",
+                          "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up", "hold_key" }) do
+    if not allowed[name] then configs[name] = { enabled = false } end
+  end
+  return { type = "computer_toolset_20260801", configs = configs }
+end
+
+-- The key combo `text` names, as written in FILL_KEYS ("shift+tab").
+function core.keyCombo(text)
+  local mods, key = core.fillKey(text)
+  return (#mods > 0 and (table.concat(mods, "+") .. "+") or "") .. tostring(key)
+end
+
+-- Whether a work or survey action may run (see checkFillAction). While working, text is typed
+-- whole or one line of it at a time, so a long block of copy can go in paragraph by paragraph.
+function core.checkWorkAction(mode, name, input, fields, uploaded)
+  input = type(input) == "table" and input or {}
+  if mode == "survey" then
+    if core.SURVEY_ACTIONS[name] then return true end
+    return false, name .. " isn't allowed while looking through the page"
+  end
+  if name == "upload_file" then return core.checkFillAction(name, input, fields, uploaded) end
+  if not core.WORK_ACTIONS[name] then return false, name .. " isn't allowed" end
+  if name == "type" then
+    local text = type(input.text) == "string" and input.text or ""
+    if text == "" then return false, "nothing to type" end
+    for _, f in ipairs(fields or {}) do
+      if not f.skip and f.value ~= "" then
+        if f.value == text then return true end
+        for line in (f.value .. "\n"):gmatch("(.-)\n") do
+          if line ~= "" and line == text then return true end
+        end
+      end
+    end
+    return false, "only the text the user confirmed can be typed"
+  end
+  if name == "key" then
+    local combo = core.keyCombo(input.text)
+    if not (core.FILL_KEYS[combo] or core.WORK_KEYS[combo]) then
+      return false, "the " .. tostring(input.text) .. " key isn't allowed"
+    end
+    if input["repeat"] ~= nil and (type(input["repeat"]) ~= "number" or input["repeat"] > 30) then
+      return false, "too many repeats"
+    end
+  end
+  return true
+end
+
+-- Whether a click while working may land on an element with this role and label (core.clickTarget).
+-- Anything may be clicked except password fields and what reads like WORK_REFUSED. An element with
+-- no label (an editor drawn on a canvas) can't be checked: allowed, and `unchecked` says so.
+function core.workClickAllowed(role, subrole, label)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  local text = tostring(label or ""):lower()
+  for _, word in ipairs(core.WORK_REFUSED) do
+    if text:find("%f[%a]" .. word .. "%f[%A]") then
+      return false, "it reads \"" .. tostring(label) .. "\", and she never publishes, sends, pays or deletes"
+    end
+  end
+  return true, nil, text == "" and core.FILL_PRESSABLE[role] == true
+end
+
+-- The tool she ends a survey with.
+function core.proposeTool(imageIds)
+  local change = {
+    type = "object",
+    properties = {
+      where = { type = "string" },  -- which block or field, as on screen
+      text = { type = "string" },   -- the exact new text, or "" for an upload
+      upload = { type = "string" }, -- a memory image id, or ""
+    },
+    required = { "where", "text", "upload" },
+    additionalProperties = false,
+  }
+  if #imageIds > 0 then change.properties.upload = { type = "string", enum = core.withEmpty(imageIds) } end
+  return {
+    name = "propose_changes",
+    description = "End the look-through with every change to make, in page order. The user confirms them "
+      .. "before anything is touched, and only this text can be typed afterwards.",
+    input_schema = {
+      type = "object",
+      properties = { summary = { type = "string" }, changes = { type = "array", items = change } },
+      required = { "summary", "changes" },
+      additionalProperties = false,
+    },
+  }
+end
+
+function core.withEmpty(list)
+  local out = { "" }
+  for _, v in ipairs(list) do table.insert(out, v) end
+  return out
+end
+
+-- A proposal as fill-style fields ({ label, value, skip, file }) and its summary.
+function core.parseProposal(input, images)
+  input = type(input) == "table" and input or {}
+  local list = {}
+  for _, c in ipairs(type(input.changes) == "table" and input.changes or {}) do
+    if type(c) == "table" then
+      table.insert(list, { label = c.where, value = c.text, upload = c.upload, skip = false })
+    end
+  end
+  local summary = type(input.summary) == "string" and input.summary:match("^%s*(.-)%s*$") or ""
+  return core.fillFields(list, images), summary
+end
+
+-- What the confirm card shows for a proposal.
+function core.proposalText(fields, summary)
+  local lines = {}
+  if summary ~= "" then table.insert(lines, summary) table.insert(lines, "") end
+  for _, f in ipairs(fields) do
+    if f.file then table.insert(lines, string.format("%s: upload %s", f.label, f.file.name))
+    elseif not f.skip then table.insert(lines, string.format("%s: %s", f.label, f.value)) end
+  end
+  table.insert(lines, "")
+  table.insert(lines, "Return to make these changes, Esc to cancel. She may save a draft, never publish.")
+  return table.concat(lines, "\n")
+end
+
+-- The request that starts a survey or a work run.
+function core.workRequest(cfg, systemPrompt, mode, goal, fields, image, memory)
+  local content = { { type = "text", text = "<task>" .. goal .. "</task>" } }
+  local tools = { core.workToolset(mode) }
+  if mode == "survey" then
+    for _, m in ipairs(memory and memory.blocks or {}) do
+      table.insert(content, { type = "text",
+        text = string.format('<memory name="%s">\n%s\n</memory>', m.name, m.text) })
+    end
+    local ids = {}
+    for _, block in ipairs(core.imageBlocks(memory and memory.images)) do table.insert(content, block) end
+    for _, img in ipairs(memory and memory.images or {}) do table.insert(ids, img.id) end
+    table.insert(tools, core.proposeTool(ids))
+    table.insert(content, { type = "text", text = "Look through the page, then call propose_changes." })
+  else
+    table.insert(content, { type = "text", text = core.fillPlanText(fields):gsub("^Fill in these fields on screen.",
+      "Make these confirmed changes on screen.") })
+    local uploads = {}
+    for id in pairs(core.fillUploads(fields)) do table.insert(uploads, id) end
+    table.sort(uploads)
+    if #uploads > 0 then table.insert(tools, core.uploadTool(uploads)) end
+  end
+  table.insert(content, { type = "image", source = { type = "base64", media_type = "image/jpeg", data = image } })
+  return {
+    model = cfg.screenModel,
+    max_tokens = 8192,
+    thinking = { type = "adaptive" },
+    output_config = { effort = cfg.screenEffort },
+    system = { { type = "text", text = systemPrompt .. "\n\n" .. (mode == "survey" and "Now: look through the page."
+      or "Now: make the changes."), cache_control = { type = "ephemeral" } } },
+    tools = tools,
+    messages = { { role = "user", content = content } },
+  }
+end
+
 
 -- Top-left corner for a `w` x `h` panel near `point`, kept inside `frame` with a margin.
 function core.panelOrigin(point, w, h, frame, margin)

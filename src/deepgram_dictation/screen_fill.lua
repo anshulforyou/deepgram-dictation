@@ -10,10 +10,17 @@
 --   - Esc, or any mouse or keyboard input from the user, stops her at once, and so does switching
 --     to another app; at most the actions and seconds core.fillLimits allows for the plan
 --
--- Screenshots go to Anthropic's API and are never saved.
+-- The same engine works on a whole page (opts.mode): "survey" looks through it with screenshots and
+-- scrolling only and ends by proposing every change; "work" makes the changes the user confirmed,
+-- and may click what fill can't (core.workClickAllowed: never publish, send, pay or delete) and
+-- save a draft. Typing stays limited to the confirmed text in every mode.
+--
+-- Screenshots go to Anthropic's API and are never saved. Grandma's badge is hidden while each one
+-- is taken, so it never covers what she needs to see.
 
 local core = require("deepgram_dictation.core")
 local screen = require("deepgram_dictation.screen")
+local badge = require("deepgram_dictation.badge")
 
 local M = {}
 
@@ -24,7 +31,7 @@ local NOT_EXECUTED = "Not executed: an earlier computer action in this turn fail
 -- hs.json turns an empty Lua table into [], but a tool_use input must go back as {}.
 local EMPTY_OBJECT = "__deepgram_dictation_empty_object__"
 
-local cfg, instructions, active
+local cfg, instructions, workInstructions, active
 local DRAG_BIN = core.supportDir() .. "/GrandmaDrag"
 -- Drag helpers in flight (an hs.task nothing refers to can be collected before it ends).
 local draggers = {} -- luacheck: ignore 241
@@ -109,6 +116,10 @@ function M.setup(config)
   instructions = f and f:read("a")
   if f then f:close() end
   if not instructions then log("fill_prompt.txt not found") end
+  local w = io.open(MODULE_DIR .. "/work_prompt.txt", "r")
+  workInstructions = w and w:read("a")
+  if w then w:close() end
+  if not workInstructions then log("work_prompt.txt not found") end
 end
 
 function M.enabled() return cfg ~= nil and cfg.screenAssist and instructions ~= nil end
@@ -196,8 +207,16 @@ local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before
 -- each action; `done(summary, info)` exactly once, with info = { status = "done" | "stopped" |
--- "error", reason, ms, actions = { "left_click", ... } }.
-function M.run(fields, scr, progress, done)
+-- "error" | "proposed", reason, ms, actions = { "left_click", ... } }.
+-- `opts` (optional): { mode = "fill" | "survey" | "work", goal = what the user asked for, memory =
+-- { blocks = { { name, text } }, images } for a survey }. A survey ends "proposed", with the
+-- propose_changes input as `summary`.
+function M.run(fields, scr, progress, done, opts)
+  opts = opts or {}
+  local mode = opts.mode or "fill"
+  if mode ~= "fill" and not workInstructions then
+    return done(nil, { status = "error", reason = "work_prompt.txt is missing", actions = {} })
+  end
   if active then return done(nil, { status = "error", reason = "a fill is already running", actions = {} }) end
   local key = screen.apiKey()
   if not key then
@@ -210,7 +229,9 @@ function M.run(fields, scr, progress, done)
   local bundle = app and app:bundleID()
   local exposeWait = app and exposePage(app) or 0
 
-  local maxActions, maxSeconds = core.fillLimits(fields)
+  local maxActions, maxSeconds
+  if mode == "fill" then maxActions, maxSeconds = core.fillLimits(fields)
+  else maxActions, maxSeconds = core.workLimits(mode) end
   local started = hs.timer.secondsSinceEpoch()
   local finished, body, menuOpen, uploading = false, nil, false, false
   local uploaded = {} -- file id: upload attempts
@@ -259,7 +280,11 @@ function M.run(fields, scr, progress, done)
   end)
 
   local function shoot(cb)
-    screen.capture(function(shot, err) cb(shot and shot.data, err) end, { screen = scr, size = size })
+    badge.suspend()
+    screen.capture(function(shot, err)
+      badge.resume()
+      cb(shot and shot.data, err)
+    end, { screen = scr, size = size })
   end
 
   -- Waits up to `seconds` for test() to be true, checking every 0.2 s, then calls cb(result).
@@ -404,7 +429,12 @@ function M.run(fields, scr, progress, done)
     local function res(content, isError)
       return a.computer and core.fillResult(a.id, content, isError) or core.toolResult(a.id, content, isError)
     end
-    local ok, why = core.checkFillAction(a.name, a.input, fields, uploaded)
+    if mode == "survey" and a.name == "propose_changes" then
+      return finish(a.input, "proposed")
+    end
+    local ok, why
+    if mode == "fill" then ok, why = core.checkFillAction(a.name, a.input, fields, uploaded)
+    else ok, why = core.checkWorkAction(mode, a.name, a.input, fields, uploaded) end
     if not ok then return cb(res("Refused: " .. why, true), true) end
     if #actions >= maxActions then
       return finish(nil, "stopped", "it reached " .. maxActions .. " actions")
@@ -419,7 +449,9 @@ function M.run(fields, scr, progress, done)
       tostring(a.input.coordinate[2])) or a.input.text and string.format(" %q", tostring(a.input.text):sub(1, 30)) or ""
     log("%d %s%s", #actions, a.name, detail)
     local input = a.input
-    if not a.computer and a.name ~= "upload_file" then return cb(res("Refused: unknown tool", true), true) end
+    if not a.computer and (a.name ~= "upload_file" or mode == "survey") then
+      return cb(res("Refused: unknown tool", true), true)
+    end
     local function after(result, failed)
       hs.timer.doAfter(SETTLE, function() if not finished then cb(result, failed) end end)
     end
@@ -435,19 +467,29 @@ function M.run(fields, scr, progress, done)
       if not p0 or not p1 or p1.x <= p0.x or p1.y <= p0.y then
         return cb(res("Error: region outside the screen", true), true)
       end
+      badge.suspend()
       return screen.capture(function(shot, err)
+        badge.resume()
         if shot then return cb(core.fillImage(a.id, shot.data)) end
         cb(res("Error: " .. tostring(err), true), true)
       end, { screen = scr, rect = { x = p0.x, y = p0.y, w = p1.x - p0.x, h = p1.y - p0.y } })
-    elseif a.name == "left_click" or a.name == "triple_click" then
+    elseif a.name == "left_click" or a.name == "triple_click" or a.name == "double_click" then
       local point = input.coordinate and core.fillPoint(input.coordinate, frame, scale) or hs.mouse.absolutePosition()
       if not point then return cb(res("Error: coordinate outside the screen", true), true) end
       local el = element(point)
       local role, subrole = attr(el, "AXRole"), attr(el, "AXSubrole")
-      local allowed, reason = core.fillClickAllowed(role, subrole, menuOpen)
+      local allowed, reason
+      if mode == "work" then
+        local target, label = core.clickTarget(chainAt(point))
+        local unchecked
+        allowed, reason, unchecked = core.workClickAllowed(target, subrole, label)
+        if unchecked then log("click on an unlabelled %s: its name can't be checked", tostring(target)) end
+      else
+        allowed, reason = core.fillClickAllowed(role, subrole, menuOpen)
+      end
       if not allowed then return cb(res("Refused: " .. reason, true), true) end
       menuOpen = role == "AXPopUpButton" or role == "AXComboBox"
-      click(point, a.name == "triple_click" and 3 or 1)
+      click(point, a.name == "triple_click" and 3 or a.name == "double_click" and 2 or 1)
       return after(res("OK"))
     end
     -- Typing and keys go to whatever has the focus, so that is checked too.
@@ -456,6 +498,9 @@ function M.run(fields, scr, progress, done)
       f = focused()
       local allowed, reason = core.fillFocusAllowed(a.name, input, attr(f, "AXRole"), attr(f, "AXSubrole"))
       if not allowed then return cb(res("Refused: " .. reason, true), true) end
+      if a.name == "key" and core.NEWLINE_KEYS[core.keyCombo(input.text)] and attr(f, "AXRole") ~= "AXTextArea" then
+        return cb(res("Refused: Return only goes into a multi-line text box", true), true)
+      end
     end
 
     if a.name == "type" then
@@ -533,7 +578,7 @@ function M.run(fields, scr, progress, done)
         local list = core.fillActions(resp)
         if #list > 0 then return runTurn(list, resp) end
       end
-      if resp.stop_reason == "refusal" then return finish(nil, "error", "Claude declined to fill this form") end
+      if resp.stop_reason == "refusal" then return finish(nil, "error", "Claude declined to do this") end
       if resp.stop_reason == "max_tokens" then return finish(nil, "error", "Claude's reply was cut off") end
       local parts = {}
       for _, block in ipairs(type(resp.content) == "table" and resp.content or {}) do
@@ -549,7 +594,8 @@ function M.run(fields, scr, progress, done)
     shoot(function(data, err)
       if finished then return end
       if not data then return finish(nil, "error", "couldn't capture the screen: " .. tostring(err)) end
-      body = core.fillRequest(cfg, instructions, fields, data)
+      if mode == "fill" then body = core.fillRequest(cfg, instructions, fields, data)
+      else body = core.workRequest(cfg, workInstructions, mode, opts.goal or "", fields, data, opts.memory) end
       post()
     end)
   end)

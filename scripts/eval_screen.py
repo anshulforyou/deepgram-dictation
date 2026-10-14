@@ -44,7 +44,7 @@ JPEG_QUALITY = 60
 SCHEMA = {  # same as core.SCREEN_SCHEMA
     "type": "object",
     "properties": {
-        "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task"]},
+        "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task", "work"]},
         "text": {"type": "string"},
         "fields": {"type": "array", "items": {
             "type": "object",
@@ -185,6 +185,8 @@ def parse_answer(resp, images=()):
                 lines.append(f"{f['label'].strip()}: {shown}")
         if lines:
             return "fill", "\n".join(lines)
+    if value.get("kind") == "work" and isinstance(value.get("text"), str) and value["text"].strip():
+        return "work", value["text"].strip()
     task = value.get("task")
     if value.get("kind") == "task" and isinstance(task, dict) and str(task.get("goal", "")).strip():
         # One "key: value" line each, so a case can check them like a fill plan.

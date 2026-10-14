@@ -33,5 +33,7 @@
   {"screen": "pull-request", "question": "What does this PR change?", "kind": "answer", "include": [["cents"]], "exclude": []},
   {"screen": "pull-request", "question": "Can you fix the failing test on this branch?", "kind": "task", "include": [], "exclude": [], "task": {"target": ["pull/42", "fix/checkout-rounding"], "memory": ["storefront"], "edits": true}},
   {"screen": "pull-request", "question": "Why is the go test failing here?", "kind": "answer", "kind_any": true, "include": [["TestTotalWithDiscount"]], "exclude": []},
-  {"screen": "email", "question": "Look into Priya's company and tell me what they do before the meeting.", "kind": "task", "include": [], "exclude": [], "task": {"edits": false}}
+  {"screen": "email", "question": "Look into Priya's company and tell me what they do before the meeting.", "kind": "task", "include": [], "exclude": [], "task": {"edits": false}},
+  {"screen": "page-builder", "question": "Update this whole landing page for the Trailrunner 2 based on what we know about it, and put the right hero image in.", "kind": "work", "include": [["Trailrunner 2"]], "exclude": [], "memory_any": ["acme", "spring-launch"]},
+  {"screen": "page-builder", "question": "Rewrite the copy on this page so it matches the actual product.", "kind": "work", "include": [], "exclude": [], "memory_any": ["acme", "spring-launch"]}
 ]
