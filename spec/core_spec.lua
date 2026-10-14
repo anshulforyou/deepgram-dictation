@@ -1110,3 +1110,40 @@ describe("learning from voice", function()
   end)
 end)
 
+
+describe("sounds", function()
+  local function cfg(over)
+    local c = { sounds = true, soundVolume = 0.5, dictationSounds = false }
+    for k, v in pairs(over or {}) do c[k] = v end
+    return c
+  end
+
+  it("play by default, but never while a call could hear them", function()
+    assert.is_true(core.soundAllowed(cfg(), "ask", false))
+    assert.is_false(core.soundAllowed(cfg(), "ask", true))
+    assert.is_false(core.soundAllowed(cfg({ sounds = false }), "answer", false))
+  end)
+
+  it("tick only with dictationSounds", function()
+    assert.is_false(core.soundAllowed(cfg(), "tick", false))
+    assert.is_true(core.soundAllowed(cfg({ dictationSounds = true }), "tick", false))
+  end)
+
+  it("leave out what soundsOff names", function()
+    assert.is_false(core.soundAllowed(cfg({ soundsOff = { think = true } }), "think", false))
+    assert.is_true(core.soundAllowed(cfg({ soundsOff = { think = true } }), "answer", false))
+  end)
+
+  it("count an online meeting or a call app on the mic as a call", function()
+    assert.is_true(core.inCall(true, {}))
+    assert.is_true(core.inCall(false, { ["us.zoom.xos"] = true }))
+    assert.is_false(core.inCall(false, {}))
+    assert.is_false(core.inCall(false, nil))
+  end)
+
+  it("defaults on, quiet, without the dictation tick", function()
+    assert.is_true(core.DEFAULTS.sounds)
+    assert.is_false(core.DEFAULTS.dictationSounds)
+    assert.is_true(core.OPTIONS.soundsOff)
+  end)
+end)

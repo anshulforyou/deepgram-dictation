@@ -97,12 +97,41 @@ Re-running `./install.sh` upgrades the module and leaves your settings, dictiona
 
 | Action | What happens |
 | --- | --- |
-| Hold the hotkey | A "🎙 Listening…" badge appears and recording starts |
-| Release | Audio is sent to Deepgram ("⏳ Transcribing…"), then the text is pasted |
+| Hold the hotkey | The badge shows a strand of yarn waving, and recording starts |
+| Release | Audio is sent to Deepgram (the yarn winds into a ball), then the text is pasted |
 | Tap for less than 0.3 s | Ignored, so accidental taps don't trigger anything |
 | Press another key while holding (e.g. Fn+F5) | Dictation is cancelled |
 | Hold the hotkey and **Control** (with `screenAssist`) | Ask grandma about the screen, see below |
 | 🎙 menu bar icon, or **⌃⌥⌘D** | Enable/disable dictation, start/stop meetings, reload config |
+
+## What you see and hear
+
+The badge in the middle of the screen is a small pill with grandma's yarn in it, no words:
+
+| Badge | Means |
+| --- | --- |
+| A strand of yarn waving | Listening |
+| The same strand, lighter, with sparkles | Listening to a question about the screen (Fn+Control) |
+| The strand winding into a ball | Transcribing |
+| Her needles tapping beside the ball | Thinking about your question |
+| A row of stitches, one per step, and "Esc to stop" | Filling in a form |
+| A stitch dropping onto the ball | Noting something you asked her to remember |
+| The strand sagging, barely moving | Slow connection |
+
+Errors and anything you need to act on still come as words. Each animation is a looping GIF macOS
+plays by itself, so the badge costs almost no CPU. `make render-badges` redraws them from
+[`scripts/badge_frames.lua`](scripts/badge_frames.lua) (needs Hammerspoon running).
+
+Grandma's moments have soft sounds: two rising notes when you hold Fn+Control, a quiet needle tap
+every second or so while she thinks, a chime when her answer opens, a soft note when she writes at
+the cursor, a needle tap when a fill starts and three settling notes when it's done, a low note when
+she's noted something, and two falling notes when something went wrong. In-person meetings get a
+note when recording starts and the settling notes when the transcript is saved. Sounds never play
+while a call could hear them: while an online meeting is recorded, or while Zoom, Meet, Teams or a
+browser holds the mic. `sounds = false` turns them off, `soundVolume` sets how loud, `soundsOff =
+{ think = true }` silences one, and `dictationSounds = true` adds a faint tick when a plain
+dictation starts and is pasted. `make sounds` rebuilds them from
+[`scripts/make_sounds.py`](scripts/make_sounds.py).
 
 ## Cleaning up dictation with Claude
 
@@ -417,6 +446,10 @@ deepgramDictation.start({
 | `screenTimeout` | `20` | Seconds to wait for an answer about the screen |
 | `learnFromVoice` | `true` | With `grandmaHome`: turn each day's screen questions, fills and corrections, and "remember ...", into memory proposals |
 | `learnStyle` | `false` | With `grandmaHome`: also propose changes to `global/style.md` from how you write in dictations |
+| `sounds` | `true` | Soft sounds for grandma's moments, never while a call could hear them |
+| `soundVolume` | `0.5` | 0 to 1, on top of the system volume |
+| `dictationSounds` | `false` | Also a faint tick when a plain dictation starts and is pasted |
+| `soundsOff` | `nil` | Sounds to leave out, e.g. `{ think = true }` (names in `src/deepgram_dictation/sounds/`) |
 | `anthropicKeychainName` | `"anthropic-api-key"` | Keychain service name holding the Anthropic API key |
 | `keytermNames` | `50` | How many names from grandma memory Deepgram listens for |
 | `keepDictations` | `0` | Keep the last N dictations (audio and text) for review and replay |

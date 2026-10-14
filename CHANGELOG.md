@@ -36,6 +36,10 @@ All notable changes to this project are documented here. The format follows
   and corrections become memory proposals for `grandma review`, "grandma, remember ..." becomes one
   right away, and with `learnStyle` your dictations teach `global/style.md` how you write, never
   what about.
+- Sounds: soft notes and needle taps when you ask grandma something, while she thinks, when she
+  answers, fills or notes something, when something fails, and when an in-person meeting starts and
+  is saved. Silent while a call could hear them. `sounds`, `soundVolume`, `soundsOff`, and
+  `dictationSounds` for a tick on plain dictation.
 
 ### Fixed
 
@@ -47,7 +51,10 @@ All notable changes to this project are documented here. The format follows
   [grandma](https://github.com/anshulforyou/grandma), with an animated header made from grandma's
   mascot. Existing installs keep working: the Hammerspoon module, Keychain entries and support
   folder keep their names.
-- The badge says Listening as soon as the key is down (no more "Connecting mic").
+- The badge is grandma's yarn instead of words: a strand waving while she listens, winding into a
+  ball while it's transcribed, her needles while she thinks, a stitch per step while she fills, a
+  stitch dropped on the ball when she notes something, and a sagging strand on a slow connection.
+  It shows as soon as the key is down. Errors are still words.
 - The dictation stays on the clipboard after pasting (`restoreClipboard` now defaults to `false`),
   so ⌘V still has it when focus moved while you spoke.
 - A stream that falls behind on a slow connection no longer pastes a partial transcript: the whole
