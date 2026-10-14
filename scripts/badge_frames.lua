@@ -12,7 +12,7 @@ M.LOOP, M.FPS, M.H = 2.4, 20, 34
 M.WIDTH = { listening = 104, looking = 104, transcribing = 104, thinking = 112, noting = 96, slow = 104, needles = 40 }
 M.INSET = { x = 10, y = 3 } -- trimmed from each side (only y for needles, which sit mid-pill)
 M.BG = "1d1a1c"
-local ROSE, DEEP, LIGHT = "fa98a3", "d2626f", "feb1bb"
+local ROSE, DEEP, LIGHT, WOOD = "fa98a3", "d2626f", "feb1bb", "e2b68c" -- WOOD: her needles, as in the mascot
 local H, TAU = M.H, 2 * math.pi
 
 local function rgb(hex, alpha)
@@ -58,8 +58,8 @@ local function ball(list, cx, cy, r, turn)
   end
 end
 
--- One of her knitting needles, from its knob at (x0, y0) to its point, turned by `angle`
--- (radians) about (px, py).
+-- One of her knitting needles, from its knob at (x0, y0) to its tip at (x1, y1), turned by
+-- `angle` (radians) about (px, py).
 local function needle(list, x0, y0, x1, y1, px, py, angle)
   local function turn(x, y)
     local dx, dy = x - px, y - py
@@ -68,16 +68,31 @@ local function needle(list, x0, y0, x1, y1, px, py, angle)
   local ax, ay = turn(x0, y0)
   local bx, by = turn(x1, y1)
   table.insert(list, { type = "segments", coordinates = { { x = ax, y = ay }, { x = bx, y = by } },
-                       action = "stroke", strokeColor = rgb(LIGHT), strokeWidth = 1.8, strokeCapStyle = "round" })
-  table.insert(list, { type = "circle", center = { x = ax, y = ay }, radius = 2.2, action = "fill",
-                       fillColor = rgb(LIGHT) })
+                       action = "stroke", strokeColor = rgb(WOOD), strokeWidth = 2.2, strokeCapStyle = "round" })
+  table.insert(list, { type = "circle", center = { x = ax, y = ay }, radius = 2.4, action = "fill",
+                       fillColor = rgb(DEEP) })
 end
 
--- Two needles crossed at (cx, cy), half-length (dx, dy), tapping in turn.
-local function needles(list, cx, cy, dx, dy, t)
-  local tap = math.sin(t * per(4))
-  needle(list, cx - dx, cy + dy, cx + dx, cy - dy, cx, cy, math.rad(-7 * math.max(0, tap)))
-  needle(list, cx + dx, cy + dy, cx - dx, cy - dy, cx, cy, math.rad(7 * math.max(0, -tap)))
+-- Her two needles held as she knits: tips crossing just above (cx, cy), knobs out and down,
+-- `half` wide. The right one dips as each stitch is made (`dip`, 0 to 1), the left one answers.
+local function needles(list, cx, cy, half, dip)
+  needle(list, cx - half, cy + 3, cx + 4, cy - 6, cx + 4, cy - 6, math.rad(-6 * dip))
+  needle(list, cx + half, cy + 3, cx - 4, cy - 6, cx - 4, cy - 6, math.rad(-9 * dip))
+end
+
+-- A small knitted piece hanging under the needles at (cx, top): `rows` full rows of three
+-- stitches, then the row being knitted with `made` (fractional) stitches, everything moved down
+-- by `drop` of a row and the bottom row fading as it goes.
+local ROW, COL, SIZE = 5, 6.5, 2.8
+local function swatch(list, cx, top, rows, made, drop)
+  for row = 0, rows do
+    local y = top + (row + drop) * ROW
+    local fade = row == rows and 1 - drop or 1
+    for col = 0, 2 do
+      local g = row == 0 and math.max(0, math.min(1, made - col)) or 1
+      M.stitch(list, cx + (col - 1) * COL, y, g, rgb(ROSE, fade), SIZE)
+    end
+  end
 end
 
 -- The sparkles around her in the mascot: a four-pointed star.
@@ -91,11 +106,11 @@ local function sparkle(list, x, y, size, alpha)
 end
 
 -- A knitted stitch: a V, grown in by `g` (0 to 1). Also drawn live by badge.lua.
-function M.stitch(list, x, y, g, color)
-  local s = 4.5 * ease(g)
+function M.stitch(list, x, y, g, color, size)
+  local s = (size or 4.5) * ease(g)
   if s <= 0 then return end
   table.insert(list, { type = "segments", action = "stroke", closed = false, strokeColor = color or rgb(ROSE),
-    strokeWidth = 2, strokeCapStyle = "round", strokeJoinStyle = "round",
+    strokeWidth = size and 1.6 or 2, strokeCapStyle = "round", strokeJoinStyle = "round",
     coordinates = { { x = x - s * 0.7, y = y - s }, { x = x, y = y + s * 0.6 }, { x = x + s * 0.7, y = y - s } } })
 end
 
@@ -121,13 +136,20 @@ function FRAMES.transcribing(t, w)
   return list
 end
 
--- Her needles tap beside the ball, yarn running between them: she is thinking.
+-- She knits: a stitch at a time grows under her needles while the yarn runs in from the ball.
+-- Three stitches make a row, then the piece moves down one row, so the loop joins up.
 function FRAMES.thinking(t, w)
-  local cx, cy = w - 34, H / 2
-  local list = { strand(26, cx, cy + 1, 1.6, t * per(2), 1.5, rgb(ROSE), 1.8, 3) }
-  ball(list, 18, cy + 2, 8, t * per(1))
-  needles(list, cx, cy, 16, 9, t)
-  sparkle(list, w - 14, 8, 2.4 * math.max(0, math.sin(t * per(1))), 0.85)
+  local cx, cy = w - 36, H / 2 - 1
+  local p = t / M.LOOP
+  local made = math.min(3, p / 0.8 * 3)          -- three stitches in the first 80% of the loop
+  local drop = ease((p - 0.8) / 0.2)             -- then the piece settles down a row
+  local beat = (p / 0.8 * 3) % 1                 -- each stitch: the needle dips and comes back
+  local dip = p < 0.8 and math.sin(math.pi * beat) ^ 2 or 0
+  local list = {}
+  ball(list, 23, H / 2 + 1, 8, t * per(1))
+  table.insert(list, strand(30, cx - 9, H / 2 + 3, 1.4, t * per(2), 1, rgb(ROSE), 1.8, 2))
+  swatch(list, cx, cy + 5, 1, made, drop)
+  needles(list, cx, cy, 17, dip)
   return list
 end
 
@@ -155,7 +177,7 @@ end
 -- Filling: only her needles move; badge.lua draws the stitches.
 function FRAMES.needles(t, w)
   local list = {}
-  needles(list, w / 2, H / 2, 12, 8, t)
+  needles(list, w / 2, H / 2 - 1, 13, math.sin(t * per(4) / 2) ^ 2)
   return list
 end
 
