@@ -20,6 +20,8 @@ echo '{"keyterms":["Mine"],"replacements":[]}' > "$HAMMERSPOON_DIR/deepgram-dict
 [[ -f "$HAMMERSPOON_DIR/deepgram_dictation/init.lua" ]] || fail "module not installed"
 [[ -f "$HAMMERSPOON_DIR/deepgram_dictation/core.lua" ]] || fail "core not installed"
 [[ -f "$HAMMERSPOON_DIR/deepgram_dictation/meeting_transcribe.py" ]] || fail "transcriber not installed"
+[[ -f "$HAMMERSPOON_DIR/deepgram_dictation/badges/listening.gif" ]] || fail "badge animations not installed"
+[[ -f "$HAMMERSPOON_DIR/deepgram_dictation/sounds/ask.wav" ]] || fail "sounds not installed"
 [[ -x "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app/Contents/MacOS/DeepgramRecorder" ]] \
   || fail "recorder not built"
 codesign --verify "$DEEPGRAM_DICTATION_SUPPORT_DIR/DeepgramRecorder.app" || fail "recorder not signed"

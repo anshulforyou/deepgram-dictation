@@ -155,6 +155,10 @@ local function poll()
   end)
 end
 
+-- Call apps and browsers using the mic as of the last poll (key -> true). Empty when meetings
+-- aren't being detected.
+function M.callers() return offered end
+
 function M.setup(config, meetingModule)
   cfg, meeting = config, meetingModule
   if not cfg.detectMeetings then return end

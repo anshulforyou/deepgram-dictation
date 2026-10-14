@@ -6,6 +6,7 @@
 -- Hammerspoon reload during a meeting picks the recording back up.
 
 local core = require("deepgram_dictation.core")
+local sounds = require("deepgram_dictation.sounds")
 local indicator = require("deepgram_dictation.meeting_indicator")
 
 local M = {}
@@ -176,6 +177,7 @@ onTranscribed = function(stdout, stderr)
   if not result then
     log("transcription failed: %s %s", tostring(err), tostring(stderr))
     notify("Meeting transcription failed", tostring(err) .. "\nUse the 🎙 menu to retry.")
+    sounds.play("error")
     setState("idle")
     return
   end
@@ -201,6 +203,7 @@ onTranscribed = function(stdout, stderr)
       table.concat(result.speakers or {}, ", ")),
     result.path)
   log("saved %s", result.path)
+  sounds.play("done")
   setState("idle")
 end
 
@@ -232,16 +235,19 @@ function M.start(mode, source)
       beginRecordingState(dir, hs.timer.secondsSinceEpoch(), online, source)
       local what = source and source.name or (online and "meeting (mic + computer audio)" or "meeting (mic)")
       hs.alert.show("🔴 Recording " .. what, 2)
+      sounds.play("record")
       for _, w in ipairs(status.warnings or {}) do hs.alert.show(w, 6) end
       return true
     elseif status.state == "error" then
       hs.alert.show("Couldn't start recording: " .. tostring(status.error), 6)
+      sounds.play("error")
       setState("idle")
       return true
     end
     return false
   end, 90, function()
     hs.alert.show("Recorder didn't start. Check Microphone permission for DeepgramRecorder.", 6)
+    sounds.play("error")
     setState("idle")
   end)
 end
@@ -410,6 +416,8 @@ end
 function M.recorderApp() return cfg.recorderApp or (SUPPORT_DIR .. "/DeepgramRecorder.app") end
 function M.transcriptsDir() return cfg.transcriptsDir or (os.getenv("HOME") .. "/Documents/Meeting Transcripts") end
 function M.state() return state end
+-- True while an online meeting (with computer audio) is being recorded.
+function M.online() return session ~= nil and session.online == true end
 function M.source() return session and session.source or nil end
 
 function M.elapsed()

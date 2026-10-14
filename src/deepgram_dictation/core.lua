@@ -54,11 +54,18 @@ core.DEFAULTS = {
   -- Learning from what you say to grandma (needs grandmaHome; writes proposals for `grandma review`)
   learnFromVoice   = true,      -- distill each day's screen questions, fills and corrections; "remember ..."
   learnStyle       = false,     -- also learn how you write from your dictations (patterns, never content)
+
+  -- Sounds: soft notes and needle taps for grandma's moments. Silent while a call could hear them.
+  sounds           = true,
+  soundVolume      = 0.5,       -- 0 to 1, on top of the system volume
+  dictationSounds  = false,     -- also a faint tick when a plain dictation starts and is pasted
+  soundsOff        = nil,       -- e.g. { think = true }: names in src/deepgram_dictation/sounds/
 }
 
 core.OPTIONS = {
   recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
   recorderApp = true, python = true, claudePath = true, claudeModel = true, grandmaHome = true,
+  soundsOff = true,
 }
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
@@ -1058,6 +1065,20 @@ function core.parseResultLine(stdout, decode)
   if result.error then return nil, result.error end
   if type(result.path) ~= "string" then return nil, "transcriber did not return a file path" end
   return result
+end
+
+-- Whether sound `name` may play. Never while a call could hear it (`inCall`), the tick only with
+-- dictationSounds, and nothing listed in soundsOff.
+function core.soundAllowed(cfg, name, inCall)
+  if not cfg.sounds or inCall then return false end
+  if name == "tick" and not cfg.dictationSounds then return false end
+  return not (type(cfg.soundsOff) == "table" and cfg.soundsOff[name])
+end
+
+-- Whether a call could hear a sound: an online meeting is being recorded, or something the
+-- detector knows as a call app (or a browser) holds the mic.
+function core.inCall(onlineMeeting, micCallers)
+  return onlineMeeting == true or (type(micCallers) == "table" and next(micCallers) ~= nil)
 end
 
 return core

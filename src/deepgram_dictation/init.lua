@@ -14,6 +14,8 @@ local screen = require("deepgram_dictation.screen")
 local overlay = require("deepgram_dictation.screen_overlay")
 local screenFill = require("deepgram_dictation.screen_fill")
 local voice = require("deepgram_dictation.voice")
+local badge = require("deepgram_dictation.badge")
+local sounds = require("deepgram_dictation.sounds")
 
 local M = { core = core, meeting = meeting }
 
@@ -49,7 +51,7 @@ local function loadDictionary()
   return core.normalizeDictionary(ok and data or nil)
 end
 
-local BADGE = { textSize = 16, radius = 10 }
+-- Words that stay on screen until replaced, for the few states that need saying (see badge.lua).
 local GRANDMA_BADGE = {
   textSize = 16, radius = 10, strokeWidth = 1.5,
   fillColor = { red = 0.11, green = 0.10, blue = 0.11, alpha = 0.92 },
@@ -57,9 +59,19 @@ local GRANDMA_BADGE = {
   textColor = { red = 1, green = 0.90, blue = 0.92 },
 }
 
-local function setIndicator(label, style, fade)
+-- Shows what is happening: a badge kind ("listening", "thinking", ...; `n` is the fill step)
+-- animates in the badge, anything else is shown as words; nil hides it. Her needles are heard
+-- for as long as she is thinking.
+local function setIndicator(what, n, fade)
   if indicator then hs.alert.closeSpecific(indicator, fade) indicator = nil end
-  if label then indicator = hs.alert.show(label, style or BADGE, "infinite") end
+  if what == "thinking" then
+    if badge.kind() ~= "thinking" then sounds.startThinking() end
+  else
+    sounds.stopThinking()
+  end
+  if badge.KINDS[what] then return badge.show(what, n) end
+  badge.hide(fade == 0) -- at once before a screen capture, otherwise it fades
+  if what then indicator = hs.alert.show(what, GRANDMA_BADGE, "infinite") end
 end
 
 local function pasteText(text)
@@ -134,13 +146,16 @@ end
 local function fillForm(answer, s, recording, record)
   local scr = s.shot.screen
   overlay.showGlow(scr)
-  setIndicator("🧶 Grandma is filling… Esc to stop", GRANDMA_BADGE)
+  setIndicator("filling", 0)
+  sounds.play("fill")
   screenFill.run(answer.fields, scr, function(n)
     if recorder then return end
-    setIndicator(string.format("🧶 Grandma is filling (step %d)… Esc to stop", n), GRANDMA_BADGE)
+    setIndicator("filling", n)
   end, function(summary, info)
     overlay.hideGlow()
     if not recorder then setIndicator(nil) end
+    local sound = ({ done = "done", error = "error" })[info.status] -- a stopped fill stays quiet
+    if sound then sounds.play(sound) end
     if info.status == "done" then
       overlay.showPanel(summary, "Filled. Check it, then save")
     else
@@ -163,6 +178,7 @@ local function answerScreen(raw, recording, record, s)
     record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
                       kind = answer and answer.kind, answer = answer and answer.text,
                       fields = answer and answer.fields, memory = info.memory, opened = info.opened }
+    sounds.play(not answer and "error" or answer.kind == "insert" and "insert" or "answer")
     if answer and answer.kind == "fill" then
       -- Nothing is touched until the user has seen the plan and said yes.
       local pictures = {}
@@ -195,9 +211,10 @@ local function answerScreen(raw, recording, record, s)
   local remember = voice.enabled() and core.rememberText(raw)
   if remember then
     endGlow(s)
-    setIndicator("🧶 Grandma is noting that…", GRANDMA_BADGE)
+    setIndicator("noting")
     return voice.remember(remember, function(result, err)
       clearBadge(s)
+      sounds.play(result and "noted" or "error")
       record.screen = { kind = "remember", status = err and "error" or "ok", reason = err,
                         answer = result and result.line, memory = result and { result.scope } or nil }
       if result then
@@ -218,7 +235,7 @@ local function answerScreen(raw, recording, record, s)
     s.waiting = function() answerScreen(raw, recording, record, s) end -- the capture is still running
     return
   end
-  setIndicator("🧶 Grandma is thinking…", GRANDMA_BADGE)
+  setIndicator("thinking")
   screen.ask(raw, s.shot, finish)
 end
 
@@ -250,6 +267,7 @@ local function deliver(raw, dict, via, moved, s)
     local pasted = core.applyReplacements(text, dict.replacements)
     clearBadge(s) -- keeps the badge of a dictation started meanwhile
     pasteText(pasted)
+    sounds.play("tick")
     voice.dictation(pasted)
     record.cleanup = info
     record.cleaned = info.status == "ok" and text or nil
@@ -263,6 +281,7 @@ end
 local function keepFailed(reason, recording, s)
   setIndicator(nil)
   if s then endGlow(s) end
+  sounds.play("error")
   log("transcription failed: %s", reason)
   if not history.enabled() then
     os.remove(recording)
@@ -295,7 +314,7 @@ local function transcribe(label, s)
 
   local dict = loadDictionary()
   local _, keyterms = cleanup.namesFor(dict)
-  setIndicator(label or "⏳ Transcribing…", s and s.asked and GRANDMA_BADGE or nil)
+  setIndicator(label or (s and s.asked and "thinking" or "transcribing"))
   hs.http.asyncPost(core.buildListenUrl(cfg, keyterms), audio, {
     ["Authorization"] = "Token " .. key,
     ["Content-Type"] = "audio/wav",
@@ -351,7 +370,7 @@ local function finishStreaming(stdout, dict, s)
     -- The stream failed or fell behind (a slow connection): the recorder never hands back a
     -- partial transcript, so upload the whole recording instead.
     log("streaming failed (%s); falling back to upload", tostring(result.error or stdout))
-    transcribe("⏳ Slow connection, uploading…", s)
+    transcribe("slow", s)
   end
 end
 
@@ -430,7 +449,8 @@ local function startStreaming()
   proc.dict = dict
   proc.session = session
   recorder = proc.task
-  setIndicator("🎙 Listening…")
+  setIndicator("listening")
+  sounds.play("tick")
 end
 
 local function startRecording()
@@ -461,7 +481,8 @@ local function startRecording()
     hs.alert.show("Could not start recording, see Hammerspoon console")
     return
   end
-  setIndicator("🎙 Listening…")
+  setIndicator("listening")
+  sounds.play("tick")
 end
 
 local function stopRecording()
@@ -473,11 +494,7 @@ local function stopRecording()
   local duration = releasedAt - startedAt
   sendOnExit = core.shouldTranscribe(duration, cancelled, cfg.minSeconds)
   if sendOnExit then
-    if session and session.asked then
-      setIndicator("🧶 Grandma is thinking…", GRANDMA_BADGE)
-    else
-      setIndicator("⏳ Transcribing…")
-    end
+    setIndicator(session and session.asked and "thinking" or "transcribing")
     -- Keep recording a moment after the key comes up: people let go while the last word is still
     -- being spoken, and the mic delivers audio slightly late.
     local task = recorder
@@ -488,7 +505,7 @@ local function stopRecording()
       -- Results normally arrive within half a second; say why when they don't.
       slowTimer = hs.timer.doAfter(2, function()
         slowTimer = nil
-        if recorder == task then setIndicator("⏳ Slow connection…") end
+        if recorder == task then setIndicator("slow") end
       end)
     end)
   else
@@ -505,10 +522,12 @@ local function askScreen(s)
     screen.permitted(true) -- macOS shows its permission prompt (once)
     s.error = "Grandma can't see the screen yet. Allow Hammerspoon in System Settings → Privacy & Security"
       .. " → Screen & System Audio Recording, then reload Hammerspoon."
-    setIndicator("🧶 Grandma can't see the screen yet", GRANDMA_BADGE)
+    setIndicator("🧶 Grandma can't see the screen yet")
+    sounds.play("error")
     return
   end
   setIndicator(nil, nil, 0)
+  sounds.play("ask")
   overlay.hideGlow(0) -- an older question's glow mustn't end up in this screenshot
   screen.capture(function(shot, err)
     if err then
@@ -519,7 +538,7 @@ local function askScreen(s)
       if not s.discarded then
         overlay.showGlow(shot.screen)
         if session == s then
-          setIndicator(holding and "🧶 Grandma is looking…" or "🧶 Grandma is thinking…", GRANDMA_BADGE)
+          setIndicator(holding and "looking" or "thinking")
         end
       end
     end
@@ -630,6 +649,8 @@ function M.start(overrides)
   screen.setup(cfg)
   screenFill.setup(cfg)
   voice.setup(cfg)
+  badge.setup()
+  sounds.setup(cfg, function() return core.inCall(meeting.online(), detector.callers()) end)
   meeting.setup(cfg, dictPath, updateMenubar)
   detector.setup(cfg, meeting)
   updateMenubar()
@@ -657,6 +678,8 @@ function M.stop()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)
+  badge.teardown()
+  sounds.teardown()
 end
 
 return M

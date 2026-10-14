@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.wav
+!src/deepgram_dictation/sounds/*.wav
 *.aiff
 # personal dictionaries never belong in the repo; dictionary.example.json does
 deepgram-dictionary.json
