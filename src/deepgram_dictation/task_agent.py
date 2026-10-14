@@ -103,13 +103,27 @@ def is_repo(path):
     return out.returncode == 0
 
 
+MEMORY_GUIDE = """Their whole memory is readable at {home}. Each sweater is a folder there: its root files (facts.md, people.md, decisions.md and the like) are what grandma knows about that company or area, log/ holds dated notes on work in progress, and projects.md lists its projects, each with a `source:` line pointing at the project's own CLAUDE.md, which you can read too. The catalog below lists every sweater and project. The memory already included below is the part the task was matched to; read more of it whenever the task needs facts, people, decisions or history that aren't here. If you can't tell which sweater or project the task belongs to, and it matters for doing it right, ask the user which one before you start the work that depends on it."""
+
+
+def project_dirs(home):
+    """The folders of every project's CLAUDE.md the catalog points at safely, for reading."""
+    out = []
+    for i in gc.entries(home):
+        folder = project_dir(home, i)
+        if folder and folder.is_dir() and folder not in out:
+            out.append(folder)
+    return out
+
+
 def memory_text(home, item):
-    """The user's global memory, then the task's sweater or project (with its sweater's facts)."""
+    """The user's global memory, how to read the rest of it, the catalog, then the task's sweater
+    or project (with its sweater's facts)."""
     blocks = [gc.file_block(home, f) for f in nfg.root_files(home / "global")]
+    blocks.append(MEMORY_GUIDE.format(home=home))
+    blocks.append("<memory_catalog>\n" + gc.catalog(gc.entries(home)) + "\n</memory_catalog>")
     if item:
         blocks.append(gc.open_item(home, item["name"], MEMORY_CHARS)["text"])
-    else:
-        blocks.append("<memory_catalog>\n" + gc.catalog(gc.entries(home)) + "\n</memory_catalog>")
     text = "\n\n".join(blocks)
     return text[:MEMORY_CHARS]
 
@@ -142,22 +156,38 @@ def first_message(task):
     return "\n".join(lines)
 
 
-def settings(edits):
+# Files never read, wherever they are: grandma's secrets and anything shaped like a credential.
+DENIED_READS = ["**/secrets/**", "**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/*.p12", "**/id_rsa*",
+                "**/id_ed25519*", "**/*credential*", "**/*secret*", "**/.ssh/**", "**/.aws/**", "**/.gnupg/**"]
+
+
+def settings(edits, home=None):
     allow = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"] + [f"Bash({c}:*)" for c in READ_COMMANDS]
     if edits:
         allow += ["Edit", "Write", "NotebookEdit"] + [f"Bash({c}:*)" for c in EDIT_COMMANDS]
+    # Each pattern twice: as written it covers the working folder, after `//` every folder.
+    deny = [f"Bash({c}:*)" for c in DENIED_COMMANDS] + [f"Read({p})" for p in DENIED_READS] \
+        + [f"Read(//{p})" for p in DENIED_READS]
+    if home:
+        # Memory is read, never written, by a task (`//` makes the path absolute in a rule).
+        deny += [f"Read(/{home}/secrets/**)", f"Edit(/{home}/**)", f"Write(/{home}/**)"]
     return {
-        "permissions": {"allow": allow, "deny": [f"Bash({c}:*)" for c in DENIED_COMMANDS]},
+        "permissions": {"allow": allow, "deny": deny},
         "includeCoAuthoredBy": False,
         "attribution": {"commit": "", "pr": ""},
     }
 
 
-def claude_args(claude, task, where, prompt_file, model=None):
+def claude_args(claude, task, where, prompt_file, model=None, home=None):
     tools = "Read,Grep,Glob,WebFetch,WebSearch,Bash" + (",Edit,Write,NotebookEdit" if where["edits"] else "")
-    args = [claude, "--bg", "--restricted", "--permission-mode", "dontAsk", "--tools", tools,
-            "--settings", json.dumps(settings(where["edits"])), "--append-system-prompt-file", str(prompt_file),
-            "--name", f"grandma: {task['title']}"]
+    args = [claude, "--bg"]
+    if home:
+        # --add-dir takes several folders, so it comes before other flags, never before the prompt.
+        for folder in [home] + [d for d in project_dirs(home) if d != where["cwd"]]:
+            args += ["--add-dir", str(folder)]
+    args += ["--restricted", "--permission-mode", "dontAsk", "--tools", tools,
+             "--settings", json.dumps(settings(where["edits"], home)), "--append-system-prompt-file", str(prompt_file),
+             "--name", f"grandma: {task['title']}"]
     if where["worktree"]:
         args += ["-w", where["worktree"]]
     if model:
@@ -211,7 +241,7 @@ def start(task, home, workspace, out_dir, claude, model=None):
     out_dir.mkdir(parents=True, exist_ok=True)
     prompt_file = out_dir / "system.md"
     prompt_file.write_text(system_prompt(task, home, where))
-    code, output = run(claude_args(claude, task, where, prompt_file, model), cwd=where["cwd"])
+    code, output = run(claude_args(claude, task, where, prompt_file, model, home), cwd=where["cwd"])
     job = started_id(output)
     if code != 0 or not job:
         raise TaskError(explain(output))

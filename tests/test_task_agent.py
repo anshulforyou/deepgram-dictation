@@ -81,7 +81,7 @@ class PromptTest(unittest.TestCase):
         self.assertNotIn("PASSPORT", text)
         self.assertNotIn("TOKEN_ABC", text)
 
-    def test_with_no_item_the_catalog_is_sent(self):
+    def test_the_catalog_is_always_sent(self):
         where = ta.plan(task(), self.home, Path(self._tmp.name) / "w")
         self.assertIn("<memory_catalog>", ta.system_prompt(task(), self.home, where))
 
@@ -131,6 +131,37 @@ class PermissionsTest(unittest.TestCase):
         args = ta.claude_args("claude", task(), where, Path("/p"))
         self.assertIn("Edit", args[args.index("--tools") + 1])
         self.assertEqual("grandma-x", args[args.index("-w") + 1])
+
+
+class MemoryAccessTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = make_home(Path(self._tmp.name))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_the_agent_can_read_memory_and_project_folders_but_never_the_prompt_is_swallowed(self):
+        where = {"edits": False, "worktree": None, "cwd": Path("/x"), "item": None}
+        args = ta.claude_args("claude", task(), where, Path("/p"), None, self.home)
+        dirs = [args[i + 1] for i, a in enumerate(args) if a == "--add-dir"]
+        self.assertEqual(str(self.home), dirs[0])
+        self.assertIn(str(self.home / "acme" / "projects" / "fund-raise"), dirs)
+        self.assertNotEqual("--add-dir", args[-2])  # a variadic flag right before it would eat the prompt
+        self.assertEqual(ta.first_message(task()), args[-1])
+
+    def test_secrets_and_credentials_are_denied_and_memory_is_read_only(self):
+        deny = ta.settings(False, self.home)["permissions"]["deny"]
+        self.assertIn(f"Read(/{self.home}/secrets/**)", deny)
+        self.assertIn("Read(//**/.env)", deny)
+        self.assertIn(f"Write(/{self.home}/**)", deny)
+
+    def test_the_prompt_explains_where_memory_is_and_to_ask_when_unsure(self):
+        where = ta.plan(task(memory="fund-raise"), self.home, Path(self._tmp.name) / "w")
+        text = ta.system_prompt(task(), self.home, where)
+        self.assertIn(f"readable at {self.home}", text)
+        self.assertIn("ask the user which one", text)
+        self.assertIn("<memory_catalog>", text)
 
 
 class SessionTest(unittest.TestCase):
