@@ -20,6 +20,7 @@ end
 
 -- Plays `name` (a file in sounds/) at the configured volume times `scale`.
 function M.play(name, scale)
+  if not name then return end
   if not (cfg and core.soundAllowed(cfg, name, inCall())) then return end
   local s = sound(name)
   if not s then return end

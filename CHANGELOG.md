@@ -37,8 +37,8 @@ All notable changes to this project are documented here. The format follows
   right away, and with `learnStyle` your dictations teach `global/style.md` how you write, never
   what about.
 - Sounds: soft notes and needle taps when you ask grandma something, while she thinks, when she
-  answers, fills or notes something, when something fails, and when an in-person meeting starts and
-  is saved. Silent while a call could hear them. `sounds`, `soundVolume`, `soundsOff`, and
+  answers, fills or notes something, when something fails, and when an in-person meeting starts, and
+  when a transcript is saved. Silent while a call that meeting detection sees could hear them. `sounds`, `soundVolume`, `soundsOff`, and
   `dictationSounds` for a tick on plain dictation.
 
 ### Fixed

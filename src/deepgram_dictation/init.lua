@@ -154,7 +154,8 @@ local function fillForm(answer, s, recording, record)
   end, function(summary, info)
     overlay.hideGlow()
     if not recorder then setIndicator(nil) end
-    sounds.play(({ done = "done", error = "error" })[info.status])
+    local sound = ({ done = "done", error = "error" })[info.status] -- a stopped fill stays quiet
+    if sound then sounds.play(sound) end
     if info.status == "done" then
       overlay.showPanel(summary, "Filled. Check it, then save")
     else

@@ -125,10 +125,11 @@ plays by itself, so the badge costs almost no CPU. `make render-badges` redraws 
 Grandma's moments have soft sounds: two rising notes when you hold Fn+Control, a quiet needle tap
 every second or so while she thinks, a chime when her answer opens, a soft note when she writes at
 the cursor, a needle tap when a fill starts and three settling notes when it's done, a low note when
-she's noted something, and two falling notes when something went wrong. In-person meetings get a
-note when recording starts and the settling notes when the transcript is saved. Sounds never play
-while a call could hear them: while an online meeting is recorded, or while Zoom, Meet, Teams or a
-browser holds the mic. `sounds = false` turns them off, `soundVolume` sets how loud, `soundsOff =
+she's noted something, and two falling notes when something went wrong. An in-person meeting gets
+a note when recording starts, and a saved transcript gets the settling notes. Sounds stay quiet
+while a call could hear them: while an online meeting is recorded, or while meeting detection
+(`detectMeetings`, on by default) sees Zoom, Meet, Teams or a browser holding the mic. Detection
+checks every few seconds, and with it off a call isn't noticed. `sounds = false` turns them off, `soundVolume` sets how loud, `soundsOff =
 { think = true }` silences one, and `dictationSounds = true` adds a faint tick when a plain
 dictation starts and is pasted. `make sounds` rebuilds them from
 [`scripts/make_sounds.py`](scripts/make_sounds.py).
