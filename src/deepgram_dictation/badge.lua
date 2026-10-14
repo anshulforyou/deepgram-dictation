@@ -1,8 +1,9 @@
 -- The badge: a small dark pill with grandma's yarn moving in it, in place of status words.
--- Listening is a strand of yarn waving, transcribing winds it into a ball, thinking is her
--- needles tapping beside the ball, filling knits one stitch per step, noting drops a stitch
--- onto the ball, and a slow connection lets the strand sag. Messages that ask something of
--- the user (errors, "No speech detected") stay as words, in hs.alert.
+-- Listening is a strand of yarn waving, transcribing winds it into a ball, filling knits one
+-- stitch per step, noting drops a stitch onto the ball, and a slow connection lets the strand
+-- sag. While she thinks it is grandma herself, knitting, with no pill round her: her mascot
+-- (scripts/make_grandma_badge.py). Messages that ask something of the user (errors, "No speech
+-- detected") stay as words, in hs.alert.
 --
 -- Each animation is a looping GIF that macOS plays by itself (scripts/render_badges.sh draws
 -- them): no Lua runs per frame. Drawing live from Lua cost 12 to 35% of a core; a GIF ~8%,
@@ -14,8 +15,10 @@ local M = {}
 
 local DIR = hs.configdir .. "/deepgram_dictation/badges/"
 local H = 34
-local WIDTH = { listening = 104, looking = 104, transcribing = 104, thinking = 112, noting = 96, slow = 104,
+local WIDTH = { listening = 104, looking = 104, transcribing = 104, thinking = 64, noting = 96, slow = 104,
                 filling = 196 }
+local HEIGHT = { thinking = 64 } -- everything else is a pill H tall
+local MASCOT = { thinking = "grandma" } -- shown on its own, no pill
 M.KINDS = WIDTH
 local INSET_X, INSET_Y = 10, 3 -- where a GIF sits in the pill (scripts/badge_frames.lua INSET)
 local BG, ROSE, LIGHT = "1d1a1c", "fa98a3", "feb1bb"
@@ -75,14 +78,18 @@ end
 local function elements()
   local w = WIDTH[kind]
   if kind == "filling" then return fillingElements(w) end
+  if MASCOT[kind] then
+    return { { type = "image", image = gif(MASCOT[kind]), imageAnimates = true, imageScaling = "scaleProportionally",
+               frame = { x = 0, y = 0, w = w, h = HEIGHT[kind] } } }
+  end
   return { pill(w), animation(kind, { x = INSET_X, y = INSET_Y, w = w - 2 * INSET_X, h = H - 2 * INSET_Y }) }
 end
 
-local function place(w)
+local function place(w, h)
   local screen = hs.screen.mainScreen() or hs.screen.primaryScreen()
   local f = screen:frame()
   -- Where hs.alert put the old words: the middle of the screen with the focused window.
-  return { x = math.floor(f.x + (f.w - w) / 2), y = math.floor(f.y + (f.h - H) / 2), w = w, h = H }
+  return { x = math.floor(f.x + (f.w - w) / 2), y = math.floor(f.y + (f.h - h) / 2), w = w, h = h }
 end
 
 -- Makes the pill and loads the GIFs, so the first show costs nothing.
@@ -92,7 +99,7 @@ function M.setup()
   canvas:level(hs.canvas.windowLevels.overlay)
   canvas:behavior({ "canJoinAllSpaces", "stationary", "ignoresCycle" })
   canvas:clickActivating(false)
-  for name in pairs(WIDTH) do if name ~= "filling" then gif(name) end end
+  for name in pairs(WIDTH) do if name ~= "filling" then gif(MASCOT[name] or name) end end
   gif("needles")
 end
 
@@ -103,7 +110,7 @@ function M.show(newKind, n)
   local same = newKind == kind and newKind ~= "filling"
   kind, step = newKind, n or 0
   if same and canvas:isShowing() then return end -- leave a running animation alone
-  canvas:frame(place(WIDTH[kind]))
+  canvas:frame(place(WIDTH[kind], HEIGHT[kind] or H))
   canvas:replaceElements(elements())
   if not canvas:isShowing() then canvas:show() end
 end

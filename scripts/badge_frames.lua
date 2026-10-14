@@ -9,7 +9,7 @@
 local M = {}
 
 M.LOOP, M.FPS, M.H = 2.4, 20, 34
-M.WIDTH = { listening = 104, looking = 104, transcribing = 104, thinking = 112, noting = 96, slow = 104, needles = 40 }
+M.WIDTH = { listening = 104, looking = 104, transcribing = 104, noting = 96, slow = 104, needles = 40 }
 M.INSET = { x = 10, y = 3 } -- trimmed from each side (only y for needles, which sit mid-pill)
 M.BG = "1d1a1c"
 local ROSE, DEEP, LIGHT, WOOD = "fa98a3", "d2626f", "feb1bb", "e2b68c" -- WOOD: her needles, as in the mascot
@@ -80,21 +80,6 @@ local function needles(list, cx, cy, half, dip)
   needle(list, cx + half, cy + 3, cx - 4, cy - 6, cx - 4, cy - 6, math.rad(-9 * dip))
 end
 
--- A small knitted piece hanging under the needles at (cx, top): `rows` full rows of three
--- stitches, then the row being knitted with `made` (fractional) stitches, everything moved down
--- by `drop` of a row and the bottom row fading as it goes.
-local ROW, COL, SIZE = 5, 6.5, 2.8
-local function swatch(list, cx, top, rows, made, drop)
-  for row = 0, rows do
-    local y = top + (row + drop) * ROW
-    local fade = row == rows and 1 - drop or 1
-    for col = 0, 2 do
-      local g = row == 0 and math.max(0, math.min(1, made - col)) or 1
-      M.stitch(list, cx + (col - 1) * COL, y, g, rgb(ROSE, fade), SIZE)
-    end
-  end
-end
-
 -- The sparkles around her in the mascot: a four-pointed star.
 local function sparkle(list, x, y, size, alpha)
   if size <= 0.2 then return end
@@ -136,23 +121,6 @@ function FRAMES.transcribing(t, w)
   return list
 end
 
--- She knits: a stitch at a time grows under her needles while the yarn runs in from the ball.
--- Three stitches make a row, then the piece moves down one row, so the loop joins up.
-function FRAMES.thinking(t, w)
-  local cx, cy = w - 36, H / 2 - 1
-  local p = t / M.LOOP
-  local made = math.min(3, p / 0.8 * 3)          -- three stitches in the first 80% of the loop
-  local drop = ease((p - 0.8) / 0.2)             -- then the piece settles down a row
-  local beat = (p / 0.8 * 3) % 1                 -- each stitch: the needle dips and comes back
-  local dip = p < 0.8 and math.sin(math.pi * beat) ^ 2 or 0
-  local list = {}
-  ball(list, 23, H / 2 + 1, 8, t * per(1))
-  table.insert(list, strand(30, cx - 9, H / 2 + 3, 1.4, t * per(2), 1, rgb(ROSE), 1.8, 2))
-  swatch(list, cx, cy + 5, 1, made, drop)
-  needles(list, cx, cy, 17, dip)
-  return list
-end
-
 -- A stitch arcs over and drops onto the ball, which gives a little as it lands: noted.
 function FRAMES.noting(t, w)
   local list = {}
@@ -181,7 +149,7 @@ function FRAMES.needles(t, w)
   return list
 end
 
-M.KINDS = { "listening", "looking", "transcribing", "thinking", "noting", "slow", "needles" }
+M.KINDS = { "listening", "looking", "transcribing", "noting", "slow", "needles" }
 
 -- Renders every frame of `kind` to <dir>/<kind>-NN.png, on the badge colour, uncropped.
 function M.render(kind, dir)

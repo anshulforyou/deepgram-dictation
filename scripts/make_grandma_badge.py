@@ -1,0 +1,32 @@
+"""Builds src/deepgram_dictation/badges/grandma.gif, the badge while grandma thinks: her mascot,
+knitting, small and with no frame round her. Made from the mascot in the grandma repo.
+
+  python3 scripts/make_grandma_badge.py /path/to/grandma/assets/grandma-mascot.gif
+
+Shown at 64 points, so it is drawn at 128 pixels for Retina. Transparent, the mascot's own 40
+frames and timing."""
+
+import sys
+from pathlib import Path
+
+from PIL import Image, ImageSequence
+
+SIZE = 128
+OUT = Path(__file__).resolve().parent.parent / "src" / "deepgram_dictation" / "badges" / "grandma.gif"
+
+
+def main(src):
+    im = Image.open(src)
+    duration = im.info.get("duration", 130)
+    frames = []
+    for frame in ImageSequence.Iterator(im):
+        f = frame.convert("RGBA").resize((SIZE, SIZE), Image.LANCZOS)
+        alpha = f.getchannel("A").point(lambda a: 255 if a >= 128 else 0)  # GIF alpha is on or off
+        f.putalpha(alpha)
+        frames.append(f)
+    frames[0].save(OUT, save_all=True, append_images=frames[1:], duration=duration, loop=0, disposal=2)
+    print(f"{OUT.name}  {len(frames)} frames  {SIZE}x{SIZE}  {OUT.stat().st_size // 1024} KB")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1])
