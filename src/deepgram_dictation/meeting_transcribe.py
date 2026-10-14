@@ -7,6 +7,8 @@ Reads SESSION_DIR/status.json, mic.m4a and (for online meetings) system.m4a, sen
 Deepgram with speaker diarization, merges them on one timeline, and writes a Markdown file.
 With --organize-with-claude, Claude files it into a topic folder (see meeting_organize.py).
 Prints one JSON line: {"path": ..., "words": N, "speakers": [...], "folder": ...} or {"error": ...}.
+When filed into grandma, a first line with "stage": "filed" comes as soon as the transcript is
+saved, before the memory proposal, and the last line adds "proposal" or "proposalError".
 
 Deepgram responses are cached in the session dir, so re-running after a failure later in the
 pipeline does not pay for the audio twice. Uses only the Python standard library.
@@ -428,7 +430,7 @@ def propose_memory(result, grandma_home, info, path, utterances, started_at, cla
 
 
 def run(session_dir, output_dir, model, language, keychain_name, dictionary=None,
-        keep_audio=False, api_key=None, claude_path=None, claude_model=None, grandma_home=None):
+        keep_audio=False, api_key=None, claude_path=None, claude_model=None, grandma_home=None, on_filed=None):
     status_file = session_dir / "status.json"
     if not status_file.exists():
         raise TranscribeError(f"No recording found in {session_dir}")
@@ -492,6 +494,9 @@ def run(session_dir, output_dir, model, language, keychain_name, dictionary=None
         result["grandma"] = True
     if organize_error:
         result["organizeError"] = organize_error
+    # The transcript is saved: say so now, the memory proposal can take minutes on a long meeting.
+    if on_filed:
+        on_filed(dict(result))
     propose_memory(result, grandma_home, info, path, utterances, started_at, claude_path, claude_model)
     return result
 
@@ -573,7 +578,8 @@ def main(argv=None):
     try:
         result = run(args.session_dir, args.output_dir.expanduser(), args.model, args.language,
                      args.keychain_name, args.dictionary, args.keep_audio,
-                     claude_path=args.organize_with_claude, claude_model=args.claude_model, grandma_home=grandma_home)
+                     claude_path=args.organize_with_claude, claude_model=args.claude_model, grandma_home=grandma_home,
+                     on_filed=lambda r: print(json.dumps({**r, "stage": "filed"}), flush=True))
     except TranscribeError as e:
         print(json.dumps({"error": str(e)}))
         return 1

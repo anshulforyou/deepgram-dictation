@@ -17,6 +17,9 @@ local SCRIPT = hs.configdir .. "/deepgram_dictation/meeting_transcribe.py"
 local cfg, dictPath, onChange
 local state = "idle" -- idle | starting | recording | stopping | transcribing
 local session, pollTimer, tickTimer, transcriber
+-- Transcriptions still writing a memory proposal after their transcript was handed over. An
+-- hs.task nothing refers to can be collected before it ends. Only written, never read.
+local finishing = {} -- luacheck: ignore 241
 local lastTranscript
 
 local function log(fmt, ...) print("[deepgram-dictation] meeting: " .. string.format(fmt, ...)) end
@@ -129,16 +132,42 @@ local function transcribe(dir)
   end
   setState("transcribing")
   local args = core.transcribeArgs(cfg, SCRIPT, dir, M.transcriptsDir(), dictPath, claudePath())
-  transcriber = hs.task.new(python, function(_, stdout, stderr)
-    transcriber = nil
-    -- Never leave the menu stuck on "Transcribing…", whatever goes wrong below.
+  -- The first line arrives once the transcript is saved: hand it over then, not after the memory
+  -- proposal, which can take minutes. The last line then says whether a proposal was written.
+  local out, errs, handled, task = {}, {}, false, nil
+  local function handle(stdout, stderr)
+    handled = true
     local ok, err = xpcall(onTranscribed, debug.traceback, stdout, stderr)
     if not ok then
       pcall(log, "unexpected error: %s", tostring(err))
       notify("Meeting transcription failed", "Unexpected error, see the Hammerspoon console. Use the 🎙 menu to retry.")
       setState("idle")
     end
+  end
+  task = hs.task.new(python, function(code, stdout, stderr)
+    if transcriber == task then transcriber = nil end
+    finishing[task] = nil
+    table.insert(out, stdout or "")
+    -- With a stream callback, stderr arrives there; this is only what is left of it.
+    table.insert(errs, stderr or "")
+    -- Never leave the menu stuck on "Transcribing…", whatever goes wrong below.
+    if not handled then return handle(table.concat(out), table.concat(errs)) end
+    if code ~= 0 then log("after filing, the transcriber exited %d: %s", code, table.concat(errs)) end
+    local result = core.parseResultLine(table.concat(out), hs.json.decode)
+    if result and result.proposal and result.folder then
+      notify("Grandma learned from the meeting",
+        "Memory proposal ready: grandma review " .. result.folder:lower(), result.proposal)
+    elseif result and result.proposalError then
+      log("memory proposal failed: %s", result.proposalError)
+    end
+  end, function(_, stdout, stderr)
+    table.insert(out, stdout or "")
+    table.insert(errs, stderr or "")
+    local line = not handled and table.concat(out):match("[^\n]*\"stage\": \"filed\"[^\n]*\n")
+    if line then handle(line, "") end
+    return true
   end, args)
+  transcriber, finishing[task] = task, true
   transcriber:start()
 end
 

@@ -90,6 +90,10 @@ def build_prompt(utterances, folders, started_at):
     )
 
 
+class ClaudeTimeout(OrganizeError):
+    """The CLI gave no answer in time. Worth one more try: a fresh start usually answers."""
+
+
 def run_claude(claude_path, prompt, cwd, model=None, timeout=CLAUDE_TIMEOUT):
     """Runs `claude -p` with no tools and returns its structured output as a dict."""
     out = _claude_json(claude_path, prompt, cwd, model, timeout, ["--json-schema", json.dumps(SCHEMA)])
@@ -125,8 +129,11 @@ def _claude_json(claude_path, prompt, cwd, model, timeout, extra=()):
         proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout, cwd=cwd, env=env)
     except FileNotFoundError:
         raise OrganizeError(f"Claude CLI not found at {claude_path}")
-    except subprocess.TimeoutExpired:
-        raise OrganizeError("Claude took too long to respond")
+    except subprocess.TimeoutExpired as e:
+        # What the CLI said before it was killed is the only clue to why it hung.
+        said = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        said = " ".join(said.split())[-300:]
+        raise ClaudeTimeout(f"Claude took too long to respond ({timeout} s)" + (f": {said}" if said else ""))
     try:
         out = json.loads(proc.stdout)
     except ValueError:

@@ -17,7 +17,8 @@ import meeting_organize
 MEETINGS_DIR = "meetings"
 NOT_SWEATERS = {"global", "proposals", "watches", "templates"}
 MEMORY_CHAR_CAP = 120_000  # sweater memory sent to Claude for the proposal
-PROPOSAL_TIMEOUT = 600      # seconds; a long meeting plus a big sweater is a large prompt
+PROPOSAL_TIMEOUT = 300      # seconds per attempt; a 45 minute meeting with a 110 KB sweater takes ~30 s
+PROPOSAL_ATTEMPTS = 2       # a claude -p that hangs on its connection usually answers when started again
 NO_LEARNINGS = "NO DURABLE LEARNINGS"
 
 INSTRUCTIONS = """\
@@ -211,8 +212,14 @@ def write_proposal(home, sweater, transcript, utterances, started_at, claude_pat
         sweater=sweater, transcript=transcript, date=started_at.strftime("%Y-%m-%d"), none=NO_LEARNINGS,
         doctrine=capture_doctrine(), memory=sweater_memory(home, sweater),
         transcript_text=meeting_organize.transcript_text(utterances))
-    body = meeting_organize.run_claude_text(claude_path, prompt, cwd=cwd or home, model=model,
-                                            timeout=PROPOSAL_TIMEOUT).strip()
+    for attempt in range(1, PROPOSAL_ATTEMPTS + 1):
+        try:
+            body = meeting_organize.run_claude_text(claude_path, prompt, cwd=cwd or home, model=model,
+                                                    timeout=PROPOSAL_TIMEOUT).strip()
+            break
+        except meeting_organize.ClaudeTimeout:
+            if attempt == PROPOSAL_ATTEMPTS:
+                raise
     if not body or NO_LEARNINGS in body.upper():
         return None
     path = proposal_path(home, sweater, started_at)

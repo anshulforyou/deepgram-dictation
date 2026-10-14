@@ -135,13 +135,13 @@ class GrandmaRunTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_meeting(self, answer=None, proposal=None, proposal_error=None):
+    def run_meeting(self, answer=None, proposal=None, proposal_error=None, on_filed=None):
         text = mock.patch.object(mt.meeting_organize, "run_claude_text",
                                  side_effect=proposal_error, return_value=proposal or self.PROPOSAL)
         with mock.patch.object(mt.meeting_organize, "run_claude", return_value=answer or self.ANSWER), \
              text as text_call, mock.patch.dict("os.environ", {"GRANDMA_ENGINE": str(self.home / "none")}):
             result = mt.run(self.session, self.out, "nova-3", "en", "k", claude_path="/bin/claude",
-                            grandma_home=self.home)
+                            grandma_home=self.home, on_filed=on_filed)
         return result, text_call
 
     def test_files_into_the_sweaters_meetings_folder(self):
@@ -169,6 +169,16 @@ class GrandmaRunTest(unittest.TestCase):
         self.assertIn("The boiler quote came in.", prompt)
         self.assertIn("Running the house", prompt, "sweater memory is in the prompt")
 
+    def test_transcript_is_handed_over_before_the_proposal_is_written(self):
+        # A long meeting's proposal takes minutes: the filed line must not wait for it.
+        seen = []
+        result, _ = self.run_meeting(on_filed=lambda r: seen.append((r, list((self.home / "proposals").iterdir()))))
+        filed, proposals_then = seen[0]
+        self.assertEqual(filed["path"], result["path"])
+        self.assertNotIn("proposal", filed)
+        self.assertEqual(sorted(p.name for p in proposals_then), ["acme-x.md"])
+        self.assertIn("proposal", result)
+
     def test_no_durable_learnings_writes_no_proposal(self):
         result, _ = self.run_meeting(proposal="NO DURABLE LEARNINGS")
         self.assertNotIn("proposal", result)
@@ -177,6 +187,19 @@ class GrandmaRunTest(unittest.TestCase):
     def test_proposal_failure_keeps_the_transcript(self):
         result, _ = self.run_meeting(proposal_error=mt.meeting_organize.OrganizeError("rate limited"))
         self.assertEqual(result["proposalError"], "rate limited")
+        self.assertTrue(Path(result["path"]).exists())
+
+    def test_a_hung_claude_is_tried_once_more(self):
+        hung = mt.meeting_organize.ClaudeTimeout("Claude took too long to respond (300 s)")
+        result, text_call = self.run_meeting(proposal_error=[hung, self.PROPOSAL])
+        self.assertEqual(text_call.call_count, 2)
+        self.assertIn(self.PROPOSAL, Path(result["proposal"]).read_text())
+
+    def test_hung_twice_gives_up_and_keeps_the_transcript(self):
+        hung = mt.meeting_organize.ClaudeTimeout("Claude took too long to respond (300 s)")
+        result, text_call = self.run_meeting(proposal_error=[hung, hung])
+        self.assertEqual(text_call.call_count, 2)
+        self.assertIn("took too long", result["proposalError"])
         self.assertTrue(Path(result["path"]).exists())
 
     def test_no_sweater_fits_leaves_it_unfiled(self):
