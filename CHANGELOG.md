@@ -52,9 +52,10 @@ All notable changes to this project are documented here. The format follows
   mascot. Existing installs keep working: the Hammerspoon module, Keychain entries and support
   folder keep their names.
 - The badge is grandma's yarn instead of words: a strand waving while she listens, winding into a
-  ball while it's transcribed, grandma herself knitting while she thinks, a stitch per step while
-  she fills, a stitch dropped on the ball when she notes something, and a sagging strand on a slow connection.
-  It shows as soon as the key is down. Errors are still words.
+  ball while it's transcribed, grandma knitting in a round bubble while she thinks, a stitch per
+  step while she fills, a stitch dropped on the ball when she notes something, and a sagging strand
+  on a slow connection. It shows as soon as the key is down, and from one to the next the pill
+  morphs and crossfades. Errors are still words.
 - The dictation stays on the clipboard after pasting (`restoreClipboard` now defaults to `false`),
   so ⌘V still has it when focus moved while you spoke.
 - A stream that falls behind on a slow connection no longer pastes a partial transcript: the whole

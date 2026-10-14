@@ -107,14 +107,15 @@ Re-running `./install.sh` upgrades the module and leaves your settings, dictiona
 ## What you see and hear
 
 The badge in the middle of the screen is a small pill with grandma's yarn in it, no words. While
-she thinks, it's grandma herself, knitting, with no pill:
+she thinks, the pill rounds into a bubble with grandma herself in it, knitting. Every change
+morphs or fades, nothing jumps:
 
 | Badge | Means |
 | --- | --- |
 | A strand of yarn waving | Listening |
 | The same strand, lighter, with sparkles | Listening to a question about the screen (Fn+Control) |
 | The strand winding into a ball | Transcribing |
-| Grandma herself, knitting | Thinking about your question |
+| Grandma herself, knitting, in a round bubble | Thinking about your question |
 | A row of stitches, one per step, and "Esc to stop" | Filling in a form |
 | A stitch dropping onto the ball | Noting something you asked her to remember |
 | The strand sagging, barely moving | Slow connection |

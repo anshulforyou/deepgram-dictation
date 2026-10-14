@@ -70,7 +70,7 @@ local function setIndicator(what, n, fade)
     sounds.stopThinking()
   end
   if badge.KINDS[what] then return badge.show(what, n) end
-  badge.hide()
+  badge.hide(fade == 0) -- at once before a screen capture, otherwise it fades
   if what then indicator = hs.alert.show(what, GRANDMA_BADGE, "infinite") end
 end
 

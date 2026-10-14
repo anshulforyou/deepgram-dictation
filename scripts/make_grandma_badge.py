@@ -1,9 +1,9 @@
 """Builds src/deepgram_dictation/badges/grandma.gif, the badge while grandma thinks: her mascot,
-knitting, small and with no frame round her. Made from the mascot in the grandma repo.
+knitting, in the round bubble the pill becomes. Made from the mascot in the grandma repo.
 
   python3 scripts/make_grandma_badge.py /path/to/grandma/assets/grandma-mascot.gif
 
-Shown at 64 points, so it is drawn at 128 pixels for Retina. Transparent, the mascot's own 40
+Shown at 84 points, so it is drawn at 168 pixels for Retina. Transparent, the mascot's own 40
 frames and timing."""
 
 import sys
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from PIL import Image, ImageSequence
 
-SIZE = 128
+SIZE = 168
 OUT = Path(__file__).resolve().parent.parent / "src" / "deepgram_dictation" / "badges" / "grandma.gif"
 
 
