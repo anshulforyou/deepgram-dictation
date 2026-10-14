@@ -1,0 +1,27 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Pull request</title><style>
+*{box-sizing:border-box}body{margin:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;color:#1f2328;background:#fff}
+.chrome{background:#dee1e6;padding:8px 12px 10px}.tab{display:inline-block;background:#fff;border-radius:8px 8px 0 0;padding:7px 14px;font-size:12px;width:280px}
+.bar{background:#fff;border-radius:16px;padding:7px 14px;margin-top:6px;color:#3c4043;font-size:13px}
+.gh{background:#f6f8fa;border-bottom:1px solid #d1d9e0;padding:14px 32px}.gh b{font-size:15px}
+main{max-width:1240px;margin:0 auto;padding:24px 32px}h1{font-weight:400;font-size:30px;margin:0 0 8px}h1 span{color:#59636e}
+.state{display:inline-block;background:#1f883d;color:#fff;border-radius:16px;padding:5px 12px;font-weight:600;margin-right:8px}
+.meta{color:#59636e}.tabs{border-bottom:1px solid #d1d9e0;margin:20px 0;display:flex;gap:24px;padding-bottom:8px;color:#59636e}.tabs .on{color:#1f2328;font-weight:600}
+.cols{display:grid;grid-template-columns:1fr 280px;gap:24px}.box{border:1px solid #d1d9e0;border-radius:6px;margin-bottom:16px}.box h3{margin:0;background:#f6f8fa;padding:10px 16px;font-size:14px;border-bottom:1px solid #d1d9e0}
+.box p,.box ul{margin:12px 16px}.check{padding:10px 16px;border-top:1px solid #d1d9e0}.x{color:#d1242f;font-weight:700}.ok{color:#1f883d;font-weight:700}
+aside small{color:#59636e;display:block;margin:14px 0 4px;font-weight:600}
+</style></head><body>
+<div class="chrome"><span class="tab">Fix rounding in checkout totals by maya-k · Pull Request #42 · acme/storefront</span>
+<div class="bar">github.com/acme/storefront/pull/42</div></div>
+<div class="gh"><b>acme / storefront</b> &nbsp; Code &nbsp; Issues 12 &nbsp; <u>Pull requests 5</u> &nbsp; Actions</div>
+<main><h1>Fix rounding in checkout totals <span>#42</span></h1>
+<div><span class="state">Open</span><span class="meta"><b>maya-k</b> wants to merge 3 commits into <code>main</code> from <code>fix/checkout-rounding</code></span></div>
+<div class="tabs"><span class="on">Conversation 4</span><span>Commits 3</span><span>Checks 2</span><span>Files changed 6</span><span style="margin-left:auto;color:#1f883d">+184 −61</span></div>
+<div class="cols"><div>
+<div class="box"><h3>maya-k commented 2 days ago</h3><p>Totals were computed with floats in <code>checkout/total.go</code>, so a cart of three $19.99 items showed $59.96999. This moves every sum to integer cents, adds a migration for stored totals, and updates the receipt template.</p>
+<ul><li>checkout/total.go: sum in cents</li><li>migrations/0042_total_cents.sql</li><li>web/components/Receipt.tsx</li></ul></div>
+<div class="box"><h3>Some checks were not successful</h3>
+<div class="check"><span class="x">✕</span> test / go (pull_request) — Failing after 1m 12s: TestTotalWithDiscount</div>
+<div class="check"><span class="ok">✓</span> lint (pull_request) — Successful in 31s</div></div>
+<div class="box"><h3>Review required</h3><p>At least 1 approving review is required by reviewers with write access.</p></div>
+</div><aside><small>Reviewers</small>No reviews<small>Assignees</small>maya-k<small>Labels</small>bug, checkout<small>Milestone</small>October release</aside></div>
+</main></body></html>

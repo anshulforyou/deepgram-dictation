@@ -60,12 +60,19 @@ core.DEFAULTS = {
   soundVolume      = 0.5,       -- 0 to 1, on top of the system volume
   dictationSounds  = false,     -- also a faint tick when a plain dictation starts and is pasted
   soundsOff        = nil,       -- e.g. { think = true }: names in src/deepgram_dictation/sounds/
+
+  -- Background tasks: "review this PR" starts a Claude Code session in the background (needs screenAssist)
+  backgroundTasks  = true,
+  taskWorkspace    = "~/Documents/grandma-tasks", -- where a task with no project folder runs
+  taskModel        = nil,       -- e.g. "opus"; nil uses the CLI's default model
+  taskMinutes      = 45,        -- a task still working after this long is stopped
+  maxTasks         = 3,         -- running at once
 }
 
 core.OPTIONS = {
   recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
   recorderApp = true, python = true, claudePath = true, claudeModel = true, grandmaHome = true,
-  soundsOff = true,
+  soundsOff = true, taskModel = true,
 }
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
@@ -184,6 +191,14 @@ function core.mergeConfig(overrides)
   end
   if cfg.screenAssist and core.HOTKEYS[cfg.hotkey].flag == core.SCREEN_FLAG then
     error("deepgram-dictation: screenAssist uses Control, so the hotkey can't be a Control key", 2)
+  end
+  for _, name in ipairs({ "taskMinutes", "maxTasks" }) do
+    if math.type(cfg[name]) ~= "integer" or cfg[name] < 1 then
+      error("deepgram-dictation: " .. name .. " must be a positive integer", 2)
+    end
+  end
+  if type(cfg.taskWorkspace) ~= "string" or cfg.taskWorkspace == "" then
+    error("deepgram-dictation: taskWorkspace must be a folder path", 2)
   end
   for _, name in ipairs({ "keepDictations", "keytermNames" }) do
     local n = cfg[name]
@@ -480,13 +495,13 @@ function core.wantsScreen(cfg, flags)
   return cfg.screenAssist == true and flags[core.SCREEN_FLAG] == true
 end
 
--- What grandma returns for a screen question: text to paste where the user is typing, or an
--- answer to show them.
--- answer, or fields grandma will fill in on screen once the user confirms.
+-- What grandma returns for a screen question: text to paste where the user is typing, an answer
+-- to show them, fields she will fill in on screen once the user confirms, or a task she hands to
+-- a background agent.
 core.SCREEN_SCHEMA = {
   type = "object",
   properties = {
-    kind = { type = "string", enum = { "insert", "answer", "fill" } },
+    kind = { type = "string", enum = { "insert", "answer", "fill", "task" } },
     text = { type = "string" },
     fields = {
       type = "array",
@@ -502,8 +517,21 @@ core.SCREEN_SCHEMA = {
         additionalProperties = false,
       },
     },
+    task = {
+      type = "object",
+      properties = {
+        title = { type = "string" },   -- a few words, shown in notifications and the menu
+        goal = { type = "string" },    -- the task restated, complete enough to work from alone
+        target = { type = "string" },  -- what on screen it is about: a URL, a PR, a file; "" if none
+        memory = { type = "string" },  -- the sweater or project from the catalog it belongs to, or ""
+        edits = { type = "boolean" },  -- whether it may change code or files
+        minutes = { type = "integer" }, -- a rough guess of how long it takes
+      },
+      required = { "title", "goal", "target", "memory", "edits", "minutes" },
+      additionalProperties = false,
+    },
   },
-  required = { "kind", "text", "fields" },
+  required = { "kind", "text", "fields", "task" },
   additionalProperties = false,
 }
 
@@ -632,6 +660,10 @@ function core.parseScreenAnswer(resp, decode, images)
       return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
                fields = fields }
     end
+  end
+  if ok and type(value) == "table" and value.kind == "task" then
+    local task = core.taskFrom(value.task)
+    if task then return { kind = "task", text = type(value.text) == "string" and value.text or "", task = task } end
   end
   if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
       and type(value.text) == "string" and value.text:match("%S") then
@@ -1080,5 +1112,56 @@ end
 function core.inCall(onlineMeeting, micCallers)
   return onlineMeeting == true or (type(micCallers) == "table" and next(micCallers) ~= nil)
 end
+
+-- Background tasks ----------------------------------------------------------------------------
+
+core.TASK_CONFIRM_MINUTES = 10 -- a read-only task guessed to take longer than this asks first
+
+-- A well-formed task from the model's `task` object, or nil.
+function core.taskFrom(t)
+  if type(t) ~= "table" or type(t.goal) ~= "string" or not t.goal:match("%S") then return nil end
+  local function str(v) return type(v) == "string" and v:match("^%s*(.-)%s*$") or "" end
+  local title = str(t.title)
+  return { title = title ~= "" and title or str(t.goal):sub(1, 40), goal = str(t.goal), target = str(t.target),
+           memory = str(t.memory), edits = t.edits == true, minutes = tonumber(t.minutes) or 0 }
+end
+
+-- Whether a task waits for the user's yes. A minor task (read-only, a clear target, quick) starts
+-- at once; one that may change code, has nothing on screen to work from, or is long asks first.
+-- Decided here, not by the model: a task started without asking never gets the edit tools.
+function core.taskNeedsConfirm(task)
+  return task.edits or task.target == "" or task.minutes > core.TASK_CONFIRM_MINUTES
+end
+
+-- What the confirm card says.
+function core.taskPlanText(task)
+  local lines = { task.goal }
+  if task.target ~= "" then table.insert(lines, "On: " .. task.target) end
+  if task.memory ~= "" then table.insert(lines, "With grandma's memory of " .. task.memory) end
+  table.insert(lines, "")
+  table.insert(lines, task.edits and "She may change code, on a new branch in her own worktree. Nothing is pushed."
+    or "She only reads and looks things up.")
+  table.insert(lines, "Return to start it in the background, Esc to cancel.")
+  return table.concat(lines, "\n")
+end
+
+-- What changed in a background session, from the state it was last seen in (`was`) and its
+-- Claude Code state.json (`state`): "blocked" (she needs the user), "done", "failed", "stopped",
+-- or nil when there's nothing to tell.
+core.TASK_ENDS = { blocked = true, done = true, failed = true, stopped = true }
+function core.taskEvent(was, state)
+  local now = type(state) == "table" and state.state or nil
+  if type(now) ~= "string" or now == was or not core.TASK_ENDS[now] then return nil end
+  return now
+end
+
+-- What she says back, from state.json: her last message (the timeline's last text), else her result.
+function core.taskReport(state, lastText)
+  if type(lastText) == "string" and lastText:match("%S") then return lastText:match("^%s*(.-)%s*$") end
+  local out = type(state) == "table" and type(state.output) == "table" and state.output.result
+  if type(out) == "string" and out:match("%S") then return out end
+  return type(state) == "table" and type(state.detail) == "string" and state.detail or ""
+end
+
 
 return core

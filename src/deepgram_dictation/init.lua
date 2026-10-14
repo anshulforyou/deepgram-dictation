@@ -16,6 +16,7 @@ local screenFill = require("deepgram_dictation.screen_fill")
 local voice = require("deepgram_dictation.voice")
 local badge = require("deepgram_dictation.badge")
 local sounds = require("deepgram_dictation.sounds")
+local tasks = require("deepgram_dictation.tasks")
 
 local M = { core = core, meeting = meeting }
 
@@ -178,6 +179,42 @@ local function answerScreen(raw, recording, record, s)
     record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
                       kind = answer and answer.kind, answer = answer and answer.text,
                       fields = answer and answer.fields, memory = info.memory, opened = info.opened }
+    if answer and answer.kind == "task" and tasks.enabled() then
+      record.screen.task = answer.task
+      local function begin()
+        tasks.start(answer.task, raw, function(err)
+          record.screen.started = err == nil
+          if err then
+            sounds.play("error")
+            hs.pasteboard.setContents(raw)
+            overlay.showPanel("Couldn't start it: " .. err .. "\n\nYour question is on the clipboard.",
+              "Couldn't start", true)
+          else
+            sounds.play("fill")
+            overlay.showPanel(answer.task.goal .. "\n\nShe'll tell you when it's done, or if she needs you.",
+              "On it, in the background")
+          end
+          saveScreen(recording, record)
+        end)
+      end
+      if not core.taskNeedsConfirm(answer.task) then return begin() end
+      sounds.play("answer")
+      return overlay.showPanel(core.taskPlanText(answer.task), "Start this task?", false, {
+        onReturn = function()
+          record.screen.confirmed = true
+          begin()
+        end,
+        onEscape = function()
+          record.screen.confirmed = false
+          saveScreen(recording, record)
+        end,
+      })
+    end
+    if answer and answer.kind == "task" then
+      -- Background tasks are off: say what she would have done instead.
+      answer = { kind = "answer", text = (answer.text ~= "" and answer.text or answer.task.goal)
+        .. "\n\n(Background tasks are off: backgroundTasks = false.)" }
+    end
     sounds.play(not answer and "error" or answer.kind == "insert" and "insert" or "answer")
     if answer and answer.kind == "fill" then
       -- Nothing is touched until the user has seen the plan and said yes.
@@ -252,6 +289,24 @@ local function deliver(raw, dict, via, moved, s)
       hs.alert.show("Your question is on the clipboard. Ask again with Fn+Control to send the screen.", 3)
     end
     return history.save(recording, record)
+  end
+  if s and s.reply then
+    record.via = via .. "+task"
+    clearBadge(s)
+    if raw == "" then return history.save(recording, record) end
+    return tasks.reply(s.reply, raw, function(err)
+      record.task = { reply = s.reply, status = err and "error" or "ok", reason = err }
+      if err then
+        sounds.play("error")
+        hs.pasteboard.setContents(raw)
+        overlay.showPanel("Couldn't send that: " .. err .. "\n\nWhat you said is on the clipboard.",
+          "Couldn't reply", true)
+      else
+        sounds.play("fill")
+        overlay.showPanel(raw, "Sent. She's back on it")
+      end
+      history.save(recording, record)
+    end)
   end
   if s and s.asked then
     record.via = via .. "+screen"
@@ -455,10 +510,12 @@ end
 
 local function startRecording()
   screenFill.stop("you started a dictation")
+  -- A task's panel open as this starts: Fn+Control now replies to her (closing it forgets that).
+  local replyTo = tasks.awaiting()
   overlay.closePanel(0) -- at once: with Control already down, the screen is captured next
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
-  session = {}
+  session = { replyTo = replyTo }
   local s = session
   startedAt = hs.timer.secondsSinceEpoch()
   if cfg.streaming and hs.fs.attributes(recorderHelper()) then return startStreaming() end
@@ -518,6 +575,12 @@ end
 -- grandma has seen the screen.
 local function askScreen(s)
   s.asked = true
+  if s.replyTo then
+    -- A reply to a background task: what is said goes to her, the screen isn't needed.
+    s.reply = s.replyTo
+    sounds.play("ask")
+    return
+  end
   if not screen.permitted() then
     screen.permitted(true) -- macOS shows its permission prompt (once)
     s.error = "Grandma can't see the screen yet. Allow Hammerspoon in System Settings → Privacy & Security"
@@ -596,6 +659,9 @@ local function buildMenu()
     end })
     table.insert(items, { title = "-" })
   end
+  local taskItems = tasks.menuItems()
+  for _, item in ipairs(taskItems) do table.insert(items, item) end
+  if #taskItems > 0 then table.insert(items, { title = "-" }) end
   for _, item in ipairs(meeting.menuItems()) do table.insert(items, item) end
   table.insert(items, { title = "-" })
   table.insert(items, { title = "Reload Hammerspoon config", fn = hs.reload })
@@ -649,6 +715,7 @@ function M.start(overrides)
   screen.setup(cfg)
   screenFill.setup(cfg)
   voice.setup(cfg)
+  tasks.setup(cfg)
   badge.setup()
   sounds.setup(cfg, function() return core.inCall(meeting.online(), detector.callers()) end)
   meeting.setup(cfg, dictPath, updateMenubar)
@@ -675,6 +742,7 @@ function M.stop()
   overlay.teardown()
   screen.teardown()
   voice.teardown()
+  tasks.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

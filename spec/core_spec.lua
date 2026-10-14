@@ -676,7 +676,7 @@ describe("screen questions", function()
 
     it("asks for the answer in a fixed shape", function()
       assert.are.equal("json_schema", body.output_config.format.type)
-      assert.are.same({ "insert", "answer", "fill" }, body.output_config.format.schema.properties.kind.enum)
+      assert.are.same({ "insert", "answer", "fill", "task" }, body.output_config.format.schema.properties.kind.enum)
       assert.are.equal("low", body.output_config.effort)
     end)
 
@@ -1145,5 +1145,76 @@ describe("sounds", function()
     assert.is_true(core.DEFAULTS.sounds)
     assert.is_false(core.DEFAULTS.dictationSounds)
     assert.is_true(core.OPTIONS.soundsOff)
+  end)
+end)
+
+describe("background tasks", function()
+  local function reply(text) return { stop_reason = "end_turn", content = { { type = "text", text = text } } } end
+  local review = { title = " Review PR 12 ", goal = "Review the pull request",
+                   target = "https://github.com/a/b/pull/12", memory = "deepgram-dictation", edits = false,
+                   minutes = 5 }
+
+  it("reads a task answer into a clean task", function()
+    local answer = core.parseScreenAnswer(reply("T"), function()
+      return { kind = "task", text = "Reviewing", task = review }
+    end)
+    assert.are.same({ kind = "task", text = "Reviewing", task = {
+      title = "Review PR 12", goal = "Review the pull request", target = "https://github.com/a/b/pull/12",
+      memory = "deepgram-dictation", edits = false, minutes = 5 } }, answer)
+  end)
+
+  it("shows a task with no goal as an answer rather than starting it", function()
+    local answer = core.parseScreenAnswer(reply("T"), function()
+      return { kind = "task", text = "Something", task = { title = "x", goal = " " } }
+    end)
+    assert.are.equal("answer", answer.kind)
+  end)
+
+  it("titles an untitled task from its goal", function()
+    assert.are.equal("Review the pull request", core.taskFrom({ goal = "Review the pull request" }).title)
+  end)
+
+  it("starts a quick read-only task with a clear target at once", function()
+    assert.is_false(core.taskNeedsConfirm(core.taskFrom(review)))
+  end)
+
+  it("asks first when the task may change code, has no target, or is long", function()
+    local function with(k, v)
+      local t = core.taskFrom(review)
+      t[k] = v
+      return t
+    end
+    assert.is_true(core.taskNeedsConfirm(with("edits", true)))
+    assert.is_true(core.taskNeedsConfirm(with("target", "")))
+    assert.is_true(core.taskNeedsConfirm(with("minutes", 30)))
+    assert.is_false(core.taskNeedsConfirm(with("minutes", 10)))
+  end)
+
+  it("says on the confirm card whether she may change code", function()
+    local t = core.taskFrom(review)
+    assert.truthy(core.taskPlanText(t):find("only reads", 1, true))
+    t.edits = true
+    assert.truthy(core.taskPlanText(t):find("own worktree", 1, true))
+  end)
+
+  it("tells about a session only when it reaches a new end state", function()
+    assert.are.equal("blocked", core.taskEvent("working", { state = "blocked" }))
+    assert.are.equal("done", core.taskEvent("working", { state = "done" }))
+    assert.is_nil(core.taskEvent("working", { state = "working" }))
+    assert.is_nil(core.taskEvent("done", { state = "done" }))
+    assert.is_nil(core.taskEvent("working", nil))
+  end)
+
+  it("reports her last message, else the result, else the detail", function()
+    local state = { detail = "short", output = { result = "the result" } }
+    assert.are.equal("full text", core.taskReport(state, "  full text\n"))
+    assert.are.equal("the result", core.taskReport(state, nil))
+    assert.are.equal("short", core.taskReport({ detail = "short" }, ""))
+  end)
+
+  it("checks the task options", function()
+    assert.has_error(function() core.mergeConfig({ maxTasks = 0 }) end)
+    assert.has_error(function() core.mergeConfig({ taskWorkspace = "" }) end)
+    assert.is_true(core.mergeConfig({ taskModel = "opus" }).backgroundTasks)
   end)
 end)

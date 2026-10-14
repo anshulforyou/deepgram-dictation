@@ -52,6 +52,21 @@ class GradeTest(unittest.TestCase):
         self.assertTrue(ev.grade(case, "insert", "sunshine"))
 
 
+class TaskTest(unittest.TestCase):
+    TASK = ('{"kind": "task", "text": "x", "fields": [], "task": {"title": "Review PR 42", "goal": "Review it",'
+            ' "target": "github.com/acme/storefront/pull/42", "memory": "storefront", "edits": false, "minutes": 5}}')
+
+    def test_reads_a_task_and_grades_what_it_says(self):
+        reply = {"stop_reason": "end_turn", "content": [{"type": "text", "text": self.TASK}]}
+        kind, text = ev.parse_answer(reply)
+        self.assertEqual("task", kind)
+        case = {"kind": "task", "include": [], "exclude": [],
+                "task": {"target": ["pull/42"], "memory": ["storefront"], "edits": False}}
+        self.assertEqual([], ev.grade(case, kind, text))
+        case["task"]["edits"] = True
+        self.assertEqual(["task edits is False, expected True"], ev.grade(case, kind, text))
+
+
 class ParseAnswerTest(unittest.TestCase):
     def reply(self, text, stop="end_turn"):
         return {"stop_reason": stop, "content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": text}]}
@@ -77,7 +92,7 @@ class ParseAnswerTest(unittest.TestCase):
         import json
         for case in json.loads((ev.SCREENS / "cases.json").read_text()):
             self.assertTrue((ev.SCREENS / f"{case['screen']}.png").exists(), case["screen"])
-            self.assertIn(case["kind"], ("insert", "answer", "fill"))
+            self.assertIn(case["kind"], ("insert", "answer", "fill", "task"))
 
 
 if __name__ == "__main__":

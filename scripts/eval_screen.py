@@ -2,7 +2,8 @@
 
 Each case in tests/screens/cases.json names a screen (a PNG rendered from the HTML next to it
 by scripts/render_screens.sh), a spoken-style question, whether the answer should be pasted
-("insert") or shown ("answer"), words it must contain and words it must not. The request is
+("insert"), shown ("answer"), filled ("fill") or handed to a background agent ("task"), words
+it must contain and words it must not, and for a task what it must say about it ("task"). The request is
 the one the app sends: same prompt file, same JPEG conversion, same answer format. Standard
 library plus macOS's sips.
 
@@ -43,15 +44,19 @@ JPEG_QUALITY = 60
 SCHEMA = {  # same as core.SCREEN_SCHEMA
     "type": "object",
     "properties": {
-        "kind": {"type": "string", "enum": ["insert", "answer", "fill"]},
+        "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task"]},
         "text": {"type": "string"},
         "fields": {"type": "array", "items": {
             "type": "object",
             "properties": {"label": {"type": "string"}, "value": {"type": "string"},
                            "upload": {"type": "string"}, "skip": {"type": "boolean"}},
             "required": ["label", "value", "upload", "skip"], "additionalProperties": False}},
+        "task": {"type": "object", "properties": {
+            "title": {"type": "string"}, "goal": {"type": "string"}, "target": {"type": "string"},
+            "memory": {"type": "string"}, "edits": {"type": "boolean"}, "minutes": {"type": "integer"}},
+            "required": ["title", "goal", "target", "memory", "edits", "minutes"], "additionalProperties": False},
     },
-    "required": ["kind", "text", "fields"],
+    "required": ["kind", "text", "fields", "task"],
     "additionalProperties": False,
 }
 
@@ -180,6 +185,11 @@ def parse_answer(resp, images=()):
                 lines.append(f"{f['label'].strip()}: {shown}")
         if lines:
             return "fill", "\n".join(lines)
+    task = value.get("task")
+    if value.get("kind") == "task" and isinstance(task, dict) and str(task.get("goal", "")).strip():
+        # One "key: value" line each, so a case can check them like a fill plan.
+        return "task", "\n".join(f"{k}: {task.get(k)}" for k in ("title", "goal", "target", "memory", "edits",
+                                                                    "minutes"))
     if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
         return value["kind"], value["text"].strip()
     return "answer", raw
@@ -217,6 +227,15 @@ def grade(case, kind, text, used=None):
             value = field(label)
             if value not in (None, "[skip]"):
                 problems.append(f"{label} was filled with {value!r} but the memory has no value for it")
+    if kind == "task":
+        got = dict(line.partition(": ")[::2] for line in text.splitlines())
+        for key, want in case.get("task", {}).items():
+            have = got.get(key, "")
+            if isinstance(want, bool):
+                if have != str(want):
+                    problems.append(f"task {key} is {have}, expected {want}")
+            elif not any(w.lower() in have.lower() for w in want):
+                problems.append(f"task {key} is {have!r}, expected one of {want}")
     if case.get("check") == "password":
         if len(text.strip()) < 10 or not any(c.isdigit() for c in text):
             problems.append("password would not pass the form's rules")

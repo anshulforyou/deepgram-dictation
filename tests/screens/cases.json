@@ -28,5 +28,10 @@
   {"screen": "store-admin", "question": "Please fill this based on Acme Trailrunner 2 information.", "kind": "fill", "include": [], "exclude": [], "memory": ["acme"], "fill": {"title": ["Trailrunner 2"], "price": ["139"]}, "skip": ["sku"]},
   {"screen": "store-admin", "question": "Fill this in for the Trailrunner.", "kind": "fill", "include": [], "exclude": [], "memory_any": ["acme", "spring-launch"], "fill": {"price": ["139"]}},
   {"screen": "page-settings", "question": "Fill this page in with the Acme Trailrunner 2 information, and the images too.", "kind": "fill", "include": [], "exclude": [], "memory": ["acme"], "fill": {"project name": ["Trailrunner"], "sharing image": ["upload hero-wide.jpg"], "logo": ["upload square-logo.png"]}, "skip": ["redirect"]},
-  {"screen": "page-settings", "question": "Upload the right Acme image for sharing here.", "kind": "fill", "include": [], "exclude": ["team-photo"], "memory": ["acme"], "kind_any": true, "fill": {}}
+  {"screen": "page-settings", "question": "Upload the right Acme image for sharing here.", "kind": "fill", "include": [], "exclude": ["team-photo"], "memory": ["acme"], "kind_any": true, "fill": {}},
+  {"screen": "pull-request", "question": "Grandma, review this PR for me.", "kind": "task", "include": [], "exclude": [], "task": {"target": ["acme/storefront/pull/42"], "memory": ["storefront"], "edits": false}},
+  {"screen": "pull-request", "question": "What does this PR change?", "kind": "answer", "include": [["cents"]], "exclude": []},
+  {"screen": "pull-request", "question": "Can you fix the failing test on this branch?", "kind": "task", "include": [], "exclude": [], "task": {"target": ["pull/42", "fix/checkout-rounding"], "memory": ["storefront"], "edits": true}},
+  {"screen": "pull-request", "question": "Why is the go test failing here?", "kind": "answer", "kind_any": true, "include": [["TestTotalWithDiscount"]], "exclude": []},
+  {"screen": "email", "question": "Look into Priya's company and tell me what they do before the meeting.", "kind": "task", "include": [], "exclude": [], "task": {"edits": false}}
 ]
