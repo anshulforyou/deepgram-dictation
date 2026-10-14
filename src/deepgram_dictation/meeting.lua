@@ -135,7 +135,7 @@ local function transcribe(dir)
   local args = core.transcribeArgs(cfg, SCRIPT, dir, M.transcriptsDir(), dictPath, claudePath())
   -- The first line arrives once the transcript is saved: hand it over then, not after the memory
   -- proposal, which can take minutes. The last line then says whether a proposal was written.
-  local out, handled, task = {}, false, nil
+  local out, errs, handled, task = {}, {}, false, nil
   local function handle(stdout, stderr)
     handled = true
     local ok, err = xpcall(onTranscribed, debug.traceback, stdout, stderr)
@@ -145,12 +145,15 @@ local function transcribe(dir)
       setState("idle")
     end
   end
-  task = hs.task.new(python, function(_, stdout, stderr)
+  task = hs.task.new(python, function(code, stdout, stderr)
     if transcriber == task then transcriber = nil end
     finishing[task] = nil
     table.insert(out, stdout or "")
+    -- With a stream callback, stderr arrives there; this is only what is left of it.
+    table.insert(errs, stderr or "")
     -- Never leave the menu stuck on "Transcribing…", whatever goes wrong below.
-    if not handled then return handle(table.concat(out), stderr) end
+    if not handled then return handle(table.concat(out), table.concat(errs)) end
+    if code ~= 0 then log("after filing, the transcriber exited %d: %s", code, table.concat(errs)) end
     local result = core.parseResultLine(table.concat(out), hs.json.decode)
     if result and result.proposal and result.folder then
       notify("Grandma learned from the meeting",
@@ -158,8 +161,9 @@ local function transcribe(dir)
     elseif result and result.proposalError then
       log("memory proposal failed: %s", result.proposalError)
     end
-  end, function(_, stdout)
+  end, function(_, stdout, stderr)
     table.insert(out, stdout or "")
+    table.insert(errs, stderr or "")
     local line = not handled and table.concat(out):match("[^\n]*\"stage\": \"filed\"[^\n]*\n")
     if line then handle(line, "") end
     return true

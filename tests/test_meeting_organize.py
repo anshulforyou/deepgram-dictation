@@ -100,8 +100,6 @@ class RunClaudeTest(unittest.TestCase):
             mo.run_claude("/nonexistent/claude", "p", cwd=os.getcwd())
 
 
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ClaudeTimeoutTest(unittest.TestCase):
@@ -113,3 +111,7 @@ class ClaudeTimeoutTest(unittest.TestCase):
         self.assertIn("(300 s)", str(caught.exception))
         self.assertIn("529 overloaded", str(caught.exception))
         self.assertIsInstance(caught.exception, mo.OrganizeError)
+
+
+if __name__ == "__main__":
+    unittest.main()
