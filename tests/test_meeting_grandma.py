@@ -189,6 +189,19 @@ class GrandmaRunTest(unittest.TestCase):
         self.assertEqual(result["proposalError"], "rate limited")
         self.assertTrue(Path(result["path"]).exists())
 
+    def test_a_hung_claude_is_tried_once_more(self):
+        hung = mt.meeting_organize.ClaudeTimeout("Claude took too long to respond (300 s)")
+        result, text_call = self.run_meeting(proposal_error=[hung, self.PROPOSAL])
+        self.assertEqual(text_call.call_count, 2)
+        self.assertIn(self.PROPOSAL, Path(result["proposal"]).read_text())
+
+    def test_hung_twice_gives_up_and_keeps_the_transcript(self):
+        hung = mt.meeting_organize.ClaudeTimeout("Claude took too long to respond (300 s)")
+        result, text_call = self.run_meeting(proposal_error=[hung, hung])
+        self.assertEqual(text_call.call_count, 2)
+        self.assertIn("took too long", result["proposalError"])
+        self.assertTrue(Path(result["path"]).exists())
+
     def test_no_sweater_fits_leaves_it_unfiled(self):
         result, text_call = self.run_meeting(answer={**self.ANSWER, "folder": ""})
         self.assertEqual(Path(result["path"]).parent, self.out)

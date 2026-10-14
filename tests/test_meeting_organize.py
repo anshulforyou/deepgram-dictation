@@ -1,11 +1,13 @@
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src" / "deepgram_dictation"))
 
@@ -100,3 +102,14 @@ class RunClaudeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeTimeoutTest(unittest.TestCase):
+    def test_a_hung_cli_says_what_it_printed_before_it_was_killed(self):
+        hung = subprocess.TimeoutExpired(["claude"], 300, stderr=b"API Error: 529 overloaded, retrying in 60s")
+        with mock.patch.object(mo.subprocess, "run", side_effect=hung):
+            with self.assertRaises(mo.ClaudeTimeout) as caught:
+                mo.run_claude_text("/bin/claude", "prompt", cwd="/tmp", timeout=300)
+        self.assertIn("(300 s)", str(caught.exception))
+        self.assertIn("529 overloaded", str(caught.exception))
+        self.assertIsInstance(caught.exception, mo.OrganizeError)
