@@ -135,13 +135,13 @@ class GrandmaRunTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_meeting(self, answer=None, proposal=None, proposal_error=None):
+    def run_meeting(self, answer=None, proposal=None, proposal_error=None, on_filed=None):
         text = mock.patch.object(mt.meeting_organize, "run_claude_text",
                                  side_effect=proposal_error, return_value=proposal or self.PROPOSAL)
         with mock.patch.object(mt.meeting_organize, "run_claude", return_value=answer or self.ANSWER), \
              text as text_call, mock.patch.dict("os.environ", {"GRANDMA_ENGINE": str(self.home / "none")}):
             result = mt.run(self.session, self.out, "nova-3", "en", "k", claude_path="/bin/claude",
-                            grandma_home=self.home)
+                            grandma_home=self.home, on_filed=on_filed)
         return result, text_call
 
     def test_files_into_the_sweaters_meetings_folder(self):
@@ -168,6 +168,16 @@ class GrandmaRunTest(unittest.TestCase):
         prompt = text_call.call_args[0][1]
         self.assertIn("The boiler quote came in.", prompt)
         self.assertIn("Running the house", prompt, "sweater memory is in the prompt")
+
+    def test_transcript_is_handed_over_before_the_proposal_is_written(self):
+        # A long meeting's proposal takes minutes: the filed line must not wait for it.
+        seen = []
+        result, _ = self.run_meeting(on_filed=lambda r: seen.append((r, list((self.home / "proposals").iterdir()))))
+        filed, proposals_then = seen[0]
+        self.assertEqual(filed["path"], result["path"])
+        self.assertNotIn("proposal", filed)
+        self.assertEqual(sorted(p.name for p in proposals_then), ["acme-x.md"])
+        self.assertIn("proposal", result)
 
     def test_no_durable_learnings_writes_no_proposal(self):
         result, _ = self.run_meeting(proposal="NO DURABLE LEARNINGS")
