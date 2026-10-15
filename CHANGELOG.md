@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `bridgeBluetoothMic`: with AirPods, the first words of a dictation are no longer lost while
+  they switch into call mode (1 to 3 s). The built-in mic covers that start-up, and the AirPods
+  take over once they send audio. Each dictation records when that happened (`handoverMs`).
+
 - Filing into [grandma](https://github.com/anshulforyou/grandma): with `grandmaHome`, meetings go
   to the matching sweater's `meetings/` folder with an index and an INDEX.md pointer, and each one
   gets a memory proposal for `grandma review`.

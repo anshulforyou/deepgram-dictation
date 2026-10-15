@@ -11,6 +11,7 @@ core.DEFAULTS = {
   streaming    = true,        -- stream audio while the key is held (needs DeepgramRecorder.app)
   minSeconds   = 0.3,         -- releases shorter than this are treated as accidental taps
   tailSeconds  = 0.5,         -- keep recording this long after the key is released
+  bridgeBluetoothMic = true,  -- with AirPods or another Bluetooth mic, record the built-in mic until it is live
   recBinary    = nil,         -- path to sox's `rec`; auto-detected when nil
   dictionary   = nil,         -- path to dictionary JSON; defaults to <hs.configdir>/deepgram-dictionary.json
   keychainName = "deepgram-api-key",
@@ -1079,6 +1080,17 @@ end
 -- detector knows as a call app (or a browser) holds the mic.
 function core.inCall(onlineMeeting, micCallers)
   return onlineMeeting == true or (type(micCallers) == "table" and next(micCallers) ~= nil)
+end
+
+-- The built-in mic's UID to cover a Bluetooth mic's start-up with (the recorder's --bridge-uid),
+-- or nil. `default` is the default input's transport ("Bluetooth", "Built-in", ...); `inputs` is
+-- { { uid, transport } } for every input device.
+function core.bridgeMic(cfg, default, inputs)
+  if not cfg.bridgeBluetoothMic or not tostring(default):find("^Bluetooth") then return nil end
+  for _, d in ipairs(inputs or {}) do
+    if d.transport == "Built-in" and d.uid then return d.uid end
+  end
+  return nil
 end
 
 return core

@@ -1147,3 +1147,20 @@ describe("sounds", function()
     assert.is_true(core.OPTIONS.soundsOff)
   end)
 end)
+
+describe("bridgeMic", function()
+  local inputs = { { uid = "AirPods-UID", transport = "Bluetooth" },
+                   { uid = "BuiltInMicrophoneDevice", transport = "Built-in" } }
+
+  it("covers a Bluetooth mic with the built-in one", function()
+    assert.are.equal("BuiltInMicrophoneDevice", core.bridgeMic(core.mergeConfig(), "Bluetooth", inputs))
+  end)
+
+  it("does nothing for the built-in mic, with no built-in mic, or when turned off", function()
+    assert.is_nil(core.bridgeMic(core.mergeConfig(), "Built-in", inputs))
+    assert.is_nil(core.bridgeMic(core.mergeConfig(), nil, inputs))
+    assert.are.equal("BuiltInMicrophoneDevice", core.bridgeMic(core.mergeConfig(), "Bluetooth LE", inputs))
+    assert.is_nil(core.bridgeMic(core.mergeConfig(), "Bluetooth", { inputs[1] }))
+    assert.is_nil(core.bridgeMic(core.mergeConfig({ bridgeBluetoothMic = false }), "Bluetooth", inputs))
+  end)
+end)

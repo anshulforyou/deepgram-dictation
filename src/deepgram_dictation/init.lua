@@ -22,6 +22,7 @@ local M = { core = core, meeting = meeting }
 local cfg, dictPath, recBinary
 local audioPath = (os.getenv("TMPDIR") or "/tmp/") .. "deepgram-dictation.wav"
 local enabled = true
+local handoverAt
 local recorder, startedAt, releasedAt, micReadyAt, cancelled, sendOnExit, tailTimer, slowTimer
 local standby -- { task, device, output }: a recorder with the mic set up but off, see prepareStandby
 local usedStandby -- whether the current dictation started from the standby recorder
@@ -105,6 +106,8 @@ local function takeRecording(via, recording)
     deepgramMs = releasedAt and math.floor((transcribedAt - releasedAt) * 1000 + 0.5),
     -- Time from pressing the key to the first audio from the mic: speech before that is lost.
     micMs = micReadyAt and startedAt and math.floor((micReadyAt - startedAt) * 1000 + 0.5),
+    -- With a Bluetooth mic: when it took over from the built-in mic (nil: no bridge, or it never did).
+    handoverMs = handoverAt and startedAt and math.floor((handoverAt - startedAt) * 1000 + 0.5),
     tailSeconds = cfg.tailSeconds,
     standby = usedStandby,
     device = inputDeviceName(),
@@ -399,6 +402,10 @@ local function spawnRecorder(args)
     if recorder == proc.task and not micReadyAt and proc.output:find('"event":"listening"', 1, true) then
       micReadyAt = hs.timer.secondsSinceEpoch()
     end
+    -- When a Bluetooth mic took over from the built-in one that covered its start-up.
+    if recorder == proc.task and not handoverAt and proc.output:find('"event":"handover"', 1, true) then
+      handoverAt = hs.timer.secondsSinceEpoch()
+    end
     return true
   end, args)
   proc.task:setEnvironment({
@@ -411,9 +418,25 @@ end
 -- Keeps one recorder waiting with the mic set up but switched off (no recording indicator), so
 -- pressing the key only has to switch the mic on: about 150 ms instead of 400 ms, and instead of
 -- up to 2 s when the Mac has been idle. Speech in that gap is lost, so this saves first words.
+-- Recorder arguments that cover a Bluetooth mic's start-up (AirPods take 1 to 3 s to send audio)
+-- with the built-in mic: core.bridgeMic.
+local function bridgeArgs(args)
+  local default = hs.audiodevice.defaultInputDevice()
+  local inputs = {}
+  for _, d in ipairs(hs.audiodevice.allInputDevices()) do
+    table.insert(inputs, { uid = d:uid(), transport = d:transportType() })
+  end
+  local uid = core.bridgeMic(cfg, default and default:transportType(), inputs)
+  if uid then
+    table.insert(args, "--bridge-uid")
+    table.insert(args, uid)
+  end
+  return args
+end
+
 prepareStandby = function()
   if standby or not (cfg.streaming and enabled) or not hs.fs.attributes(recorderHelper()) then return end
-  standby = spawnRecorder({ "--stream", "--standby", "--save", audioPath })
+  standby = spawnRecorder(bridgeArgs({ "--stream", "--standby", "--save", audioPath }))
   if standby then standby.device = inputDeviceName() end
 end
 
@@ -440,7 +463,7 @@ local function startStreaming()
     proc.task:setInput("start " .. url .. "\n")
   else
     if proc and proc.task:isRunning() then proc.task:terminate() end
-    proc = spawnRecorder({ "--stream", "--url", url, "--save", audioPath })
+    proc = spawnRecorder(bridgeArgs({ "--stream", "--url", url, "--save", audioPath }))
     if not proc then
       hs.alert.show("Could not start recording, see Hammerspoon console")
       return
@@ -457,7 +480,7 @@ local function startRecording()
   screenFill.stop("you started a dictation")
   overlay.closePanel(0) -- at once: with Control already down, the screen is captured next
   os.remove(audioPath)
-  cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
+  cancelled, sendOnExit, micReadyAt, usedStandby, holding, handoverAt = false, false, nil, nil, true, nil
   session = {}
   local s = session
   startedAt = hs.timer.secondsSinceEpoch()

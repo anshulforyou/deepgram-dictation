@@ -451,6 +451,7 @@ deepgramDictation.start({
 | `learnStyle` | `false` | With `grandmaHome`: also propose changes to `global/style.md` from how you write in dictations |
 | `sounds` | `true` | Soft sounds for grandma's moments, never while a call could hear them |
 | `soundVolume` | `0.5` | 0 to 1, on top of the system volume |
+| `bridgeBluetoothMic` | `true` | With AirPods or another Bluetooth mic, record the built-in mic for the 1 to 3 s the Bluetooth mic takes to start, so first words aren't lost |
 | `dictationSounds` | `false` | Also a faint tick when a plain dictation starts and is pasted |
 | `soundsOff` | `nil` | Sounds to leave out, e.g. `{ think = true }` (names in `src/deepgram_dictation/sounds/`) |
 | `anthropicKeychainName` | `"anthropic-api-key"` | Keychain service name holding the Anthropic API key |

@@ -111,6 +111,30 @@ enum StreamCompletion {
     }
 }
 
+/// Covers a Bluetooth mic's start-up with the built-in mic: AirPods send only digital silence for
+/// one to three seconds after recording starts, while they switch into call mode, and speech in
+/// that time would be lost. Until the main mic delivers real audio the bridge mic's buffers are
+/// sent; from the first live main buffer on, only the main mic's.
+struct MicBridge {
+    private(set) var handedOver = false
+
+    /// Whether to send a main-mic buffer that is `alive` (not digital silence). The first live one
+    /// hands over for good.
+    mutating func sendMain(alive: Bool) -> Bool {
+        if alive { handedOver = true }
+        return handedOver
+    }
+
+    /// Whether to send a bridge-mic buffer.
+    var sendBridge: Bool { !handedOver }
+
+    /// A mic is alive once it delivers anything but digital zeros (a real mic's noise floor is far
+    /// above this even in a quiet room).
+    static func alive(_ samples: UnsafeBufferPointer<Float>) -> Bool {
+        PCM.hasSignal(samples, threshold: 0.00001)
+    }
+}
+
 enum StandbyCommand {
     /// The Deepgram URL from the "start <wss url>" line Hammerspoon writes to a standby recorder's
     /// stdin when the dictation key goes down, or nil for anything else.
