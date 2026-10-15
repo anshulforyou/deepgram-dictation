@@ -18,6 +18,9 @@ BG = (0x1D, 0x1A, 0x1C)
 INSET = (10, 3)  # points trimmed from each side; must match badge_frames.lua
 NO_INSET = {"needles"}  # drawn in the middle of the pill, not across its ends
 FPS = 20
+# Frame time (ms) for animations that should move slower than FPS: the listening strand at 20 fps
+# read as hurried while dictating (2026-10-15).
+FRAME_MS = {"listening": 80}
 
 
 def main(frames_dir, out_dir):
@@ -41,7 +44,7 @@ def main(frames_dir, out_dir):
         colours = palette.getpalette()[:64 * 3]
         bg = min(range(64), key=lambda i: sum((colours[3 * i + k] - BG[k]) ** 2 for k in range(3)))
         out = out_dir / f"{kind}.gif"
-        quantized[0].save(out, save_all=True, append_images=quantized[1:], duration=1000 // FPS, loop=0,
+        quantized[0].save(out, save_all=True, append_images=quantized[1:], duration=FRAME_MS.get(kind, 1000 // FPS), loop=0,
                           transparency=bg, disposal=2, optimize=False)
         print(f"{out.name}  {len(frames)} frames  {frames[0].size[0]}x{frames[0].size[1]}  "
               f"{out.stat().st_size // 1024} KB")
