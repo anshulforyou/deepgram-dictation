@@ -257,10 +257,12 @@ local function workOnPage(answer, s, recording, record, info)
       end
       overlay.showPanel(core.proposalText(fields, summary), "Make these changes?", false, {
         onReturn = function()
+          record.screen.closedBy = "return"
           record.screen.confirmed = true
           make(fields)
         end,
-        onEscape = function()
+        onEscape = function(how)
+          record.screen.closedBy = how
           record.screen.confirmed = false
           saveScreen(recording, record)
         end,
@@ -302,10 +304,12 @@ local function answerScreen(raw, recording, record, s)
       sounds.play("answer")
       return overlay.showPanel(core.taskPlanText(answer.task), "Start this task?", false, {
         onReturn = function()
+          record.screen.closedBy = "return"
           record.screen.confirmed = true
           begin()
         end,
-        onEscape = function()
+        onEscape = function(how)
+          record.screen.closedBy = how
           record.screen.confirmed = false
           saveScreen(recording, record)
         end,
@@ -325,10 +329,12 @@ local function answerScreen(raw, recording, record, s)
       end
       return overlay.showPanel(planText(answer), "Fill this form?", false, {
         onReturn = function()
+          record.screen.closedBy = "return"
           record.screen.confirmed = true
           fillForm(answer, s, recording, record)
         end,
-        onEscape = function()
+        onEscape = function(how)
+          record.screen.closedBy = how
           record.screen.confirmed = false
           saveScreen(recording, record)
         end,
