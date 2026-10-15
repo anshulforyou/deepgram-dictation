@@ -144,7 +144,7 @@ local function planText(answer)
   return table.concat(lines, "\n")
 end
 
--- The user said yes to a fill plan: grandma fills the form on the screen she looked at.
+-- Grandma fills the form on the screen she looked at, once the user said yes or told her to.
 local function fillForm(answer, s, recording, record)
   local scr = s.shot.screen
   overlay.showGlow(scr)
@@ -159,6 +159,11 @@ local function fillForm(answer, s, recording, record)
     local sound = ({ done = "done", error = "error" })[info.status] -- a stopped fill stays quiet
     if sound then sounds.play(sound) end
     if info.status == "done" then
+      local skipped = {}
+      for _, f in ipairs(answer.fields) do if f.skip then table.insert(skipped, f.label) end end
+      if #skipped > 0 then
+        summary = summary .. "\n\nLeft empty, not in your memory: " .. table.concat(skipped, "; ")
+      end
       overlay.showPanel(summary, "Filled. Check it, then save")
     else
       overlay.showPanel((info.status == "stopped" and "Stopped: " or "Couldn't fill it: ") .. tostring(info.reason)
@@ -195,8 +200,8 @@ local function workMemory(info, done)
   nextName(1)
 end
 
--- Grandma works on the page on screen: she looks through it, proposes every change, and once the
--- user says yes makes them. Nothing is typed or clicked before that yes.
+-- Grandma works on the page on screen: she looks through it, proposes every change, and makes them
+-- once the user says yes, or straight away when they told her outright to make them.
 local function workOnPage(answer, s, recording, record, info)
   local scr = s.shot.screen
   local function ended(summary, result, title)
@@ -249,6 +254,11 @@ local function workOnPage(answer, s, recording, record, info)
         sounds.play("answer")
         overlay.showPanel(summary ~= "" and summary or "She found nothing to change.", "Nothing to change")
         return saveScreen(recording, record)
+      end
+      if answer.asked then
+        -- They told her to make the changes: she does, without a card in between.
+        record.screen.confirmed = "asked"
+        return make(fields)
       end
       sounds.play("answer")
       local pictures = {}
@@ -320,9 +330,14 @@ local function answerScreen(raw, recording, record, s)
       answer = { kind = "answer", text = (answer.text ~= "" and answer.text or answer.task.goal)
         .. "\n\n(Background tasks are off: backgroundTasks = false.)" }
     end
+    if answer and answer.kind == "fill" and answer.asked then
+      -- They told her to fill it: she does, and shows what she filled when she's done.
+      record.screen.confirmed = "asked"
+      return fillForm(answer, s, recording, record)
+    end
     sounds.play(not answer and "error" or answer.kind == "insert" and "insert" or "answer")
     if answer and answer.kind == "fill" then
-      -- Nothing is touched until the user has seen the plan and said yes.
+      -- Not asked outright: nothing is touched until the user has seen the plan and said yes.
       local pictures = {}
       for _, f in ipairs(answer.fields) do
         if f.file and not f.skip then table.insert(pictures, { path = f.file.path, caption = f.label }) end
@@ -339,6 +354,21 @@ local function answerScreen(raw, recording, record, s)
           saveScreen(recording, record)
         end,
       }, pictures)
+    end
+    if answer and answer.kind == "insert" and answer.replaces then
+      -- A fix of text already on screen: select the original so the paste replaces it. When it
+      -- can't be found in the field, nothing is pasted; the fix is on the clipboard.
+      return screenFill.selectText(answer.replaces, function(selected)
+        record.screen.replaced = selected
+        if selected then
+          pasteText(answer.text)
+        else
+          hs.pasteboard.setContents(answer.text)
+          overlay.showPanel(answer.text .. "\n\nI couldn't select the original text in this field, so nothing was"
+            .. " pasted. Select it and press Cmd+V.", "Fixed text copied")
+        end
+        saveScreen(recording, record)
+      end)
     end
     if answer and answer.kind == "insert" then
       pasteText(answer.text)

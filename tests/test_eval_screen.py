@@ -52,6 +52,19 @@ class GradeTest(unittest.TestCase):
         self.assertTrue(ev.grade(case, "insert", "sunshine"))
 
 
+class ExtrasTest(unittest.TestCase):
+    def test_asked_and_replaces_are_graded_when_the_case_has_them(self):
+        resp = {"content": [{"type": "text", "text": '{"kind": "insert", "text": "Fixed.", "asked": true,'
+                                                      ' "replaces": "The program are bad."}'}]}
+        more = ev.extras(resp)
+        case = {"kind": "insert", "asked": True, "replaces": ["program are"]}
+        self.assertEqual([], ev.grade(case, "insert", "Fixed.", None, more))
+        self.assertEqual(["asked is True, expected False", "replaces is 'The program are bad.', expected it to hold"
+                          " ['nope']"], ev.grade({"kind": "insert", "asked": False, "replaces": ["nope"]},
+                                                 "insert", "Fixed.", None, more))
+        self.assertEqual({}, ev.extras({"content": [{"type": "text", "text": "plain"}]}))
+
+
 class TaskTest(unittest.TestCase):
     TASK = ('{"kind": "task", "text": "x", "fields": [], "task": {"title": "Review PR 42", "goal": "Review it",'
             ' "target": "github.com/acme/storefront/pull/42", "memory": "storefront", "edits": false, "minutes": 5}}')

@@ -205,6 +205,26 @@ end
 
 local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
+-- Selects `original` (text read off the screen) in the focused text field, so a paste replaces it
+-- instead of landing next to it. `done(true)` once it is selected; `done(false)` when the field
+-- doesn't show its text or the text isn't in it, and nothing is selected then.
+function M.selectText(original, done)
+  local function try()
+    local el = focused()
+    local value = el and attr(el, "AXValue")
+    local span = core.findSpan(value, original)
+    if not span then return false end
+    local ok = pcall(function() el:setAttributeValue("AXSelectedTextRange", span) end)
+    local now = ok and attr(el, "AXSelectedTextRange")
+    return type(now) == "table" and now.location == span.location and now.length == span.length
+  end
+  if try() then return done(true) end
+  local app = hs.application.frontmostApplication()
+  local wait = app and exposePage(app) or 0
+  if wait == 0 then return done(false) end
+  hs.timer.doAfter(wait, function() done(try()) end)
+end
+
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before
 -- each action; `done(summary, info)` exactly once, with info = { status = "done" | "stopped" |
 -- "error" | "proposed", reason, ms, actions = { "left_click", ... } }.

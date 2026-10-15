@@ -503,6 +503,8 @@ core.SCREEN_SCHEMA = {
   properties = {
     kind = { type = "string", enum = { "insert", "answer", "fill", "task", "work" } },
     text = { type = "string" },
+    asked = { type = "boolean" },    -- they told her outright to do it: a fill or work starts without asking
+    replaces = { type = "string" },  -- for insert: the text on screen it replaces, exactly, else ""
     fields = {
       type = "array",
       items = {
@@ -531,7 +533,7 @@ core.SCREEN_SCHEMA = {
       additionalProperties = false,
     },
   },
-  required = { "kind", "text", "fields", "task" },
+  required = { "kind", "text", "asked", "replaces", "fields", "task" },
   additionalProperties = false,
 }
 
@@ -658,12 +660,12 @@ function core.parseScreenAnswer(resp, decode, images)
     local fields = core.fillFields(value.fields, images)
     if #fields > 0 then
       return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
-               fields = fields }
+               fields = fields, asked = value.asked == true or nil }
     end
   end
   if ok and type(value) == "table" and value.kind == "work" and type(value.text) == "string"
       and value.text:match("%S") then
-    return { kind = "work", text = value.text:match("^%s*(.-)%s*$") }
+    return { kind = "work", text = value.text:match("^%s*(.-)%s*$"), asked = value.asked == true or nil }
   end
   if ok and type(value) == "table" and value.kind == "task" then
     local task = core.taskFrom(value.task)
@@ -671,9 +673,71 @@ function core.parseScreenAnswer(resp, decode, images)
   end
   if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
       and type(value.text) == "string" and value.text:match("%S") then
-    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$") }
+    local replaces = value.kind == "insert" and type(value.replaces) == "string"
+      and value.replaces:match("^%s*(.-)%s*$") or ""
+    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil }
   end
   return { kind = "answer", text = raw }
+end
+
+-- Text folded for matching what Claude read off a screenshot against a field's real value: runs
+-- of whitespace become one space and curly quotes straight ones. Returns the folded text and, for
+-- each of its bytes, the byte in `s` it came from.
+local FOLD = { ["\u{2018}"] = "'", ["\u{2019}"] = "'", ["\u{201C}"] = '"', ["\u{201D}"] = '"', ["\u{A0}"] = " " }
+local function fold(s)
+  local out, from = {}, {}
+  for pos, cp in utf8.codes(s) do
+    local ch = utf8.char(cp)
+    ch = FOLD[ch] or ch
+    if ch:match("^%s$") then
+      if #out > 0 and out[#out] ~= " " then table.insert(out, " ") table.insert(from, pos) end
+    else
+      for i = 1, #ch do table.insert(out, ch:sub(i, i)) table.insert(from, pos) end
+    end
+  end
+  if out[#out] == " " then table.remove(out) table.remove(from) end
+  return table.concat(out), from
+end
+
+-- UTF-16 code units in `s` (what Accessibility text ranges count).
+local function utf16Len(s)
+  local n = 0
+  for _, cp in utf8.codes(s) do n = n + (cp > 0xFFFF and 2 or 1) end
+  return n
+end
+
+-- Where `original` (as read off the screen) sits in `value` (the field's text), as an
+-- Accessibility range { location, length }, or nil. Exact first, then ignoring whitespace and
+-- quote style, then by its first and last words when a few letters in the middle were misread.
+function core.findSpan(value, original)
+  if type(value) ~= "string" or type(original) ~= "string" or not original:match("%S") then return nil end
+  if not utf8.len(value) or not utf8.len(original) then return nil end
+  local function range(first, last) -- byte positions in value, inclusive
+    return { location = utf16Len(value:sub(1, first - 1)), length = utf16Len(value:sub(first, last)) }
+  end
+  local a, b = value:find(original, 1, true)
+  if a then return range(a, b) end
+  local fv, from = fold(value)
+  local fo = fold(original)
+  local function lastByte(i) -- the last byte of the character folded byte i came from
+    local start = from[i]
+    local nextStart = #value + 1
+    for j = i + 1, #from do if from[j] ~= start then nextStart = from[j] break end end
+    return nextStart - 1
+  end
+  a, b = fv:find(fo, 1, true)
+  if a then return range(from[a], lastByte(b)) end
+  local edge = math.min(40, math.floor(#fo / 3))
+  if edge < 12 then return nil end
+  local head, tail = fo:sub(1, edge), fo:sub(-edge)
+  a = fv:find(head, 1, true)
+  if not a or fv:find(head, a + 1, true) then return nil end -- missing, or not one place
+  local t = fv:find(tail, a, true)
+  if not t then return nil end
+  b = t + #tail - 1
+  local span = b - a + 1
+  if span < #fo * 0.8 or span > #fo * 1.25 then return nil end
+  return range(from[a], lastByte(b))
 end
 
 -- The well-formed fields of a fill plan: { { label, value, skip, file } }. An upload field names

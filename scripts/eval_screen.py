@@ -46,6 +46,8 @@ SCHEMA = {  # same as core.SCREEN_SCHEMA
     "properties": {
         "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task", "work"]},
         "text": {"type": "string"},
+        "asked": {"type": "boolean"},
+        "replaces": {"type": "string"},
         "fields": {"type": "array", "items": {
             "type": "object",
             "properties": {"label": {"type": "string"}, "value": {"type": "string"},
@@ -56,7 +58,7 @@ SCHEMA = {  # same as core.SCREEN_SCHEMA
             "memory": {"type": "string"}, "edits": {"type": "boolean"}, "minutes": {"type": "integer"}},
             "required": ["title", "goal", "target", "memory", "edits", "minutes"], "additionalProperties": False},
     },
-    "required": ["kind", "text", "fields", "task"],
+    "required": ["kind", "text", "asked", "replaces", "fields", "task"],
     "additionalProperties": False,
 }
 
@@ -197,10 +199,26 @@ def parse_answer(resp, images=()):
     return "answer", raw
 
 
-def grade(case, kind, text, used=None):
+def extras(resp):
+    """The answer's "asked" and "replaces", or {} when it isn't the expected JSON."""
+    raw = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return {k: value.get(k) for k in ("asked", "replaces")} if isinstance(value, dict) else {}
+
+
+def grade(case, kind, text, used=None, more=None):
     """Everything wrong with an answer, as a list of reasons (empty when it passes). `used` is
-    the memory sent or opened, checked against the case's "memory" when it has one."""
+    the memory sent or opened, checked against the case's "memory" when it has one. `more` is
+    extras(): checked against the case's "asked" and "replaces" when it has them."""
     problems = []
+    more = more or {}
+    if "asked" in case and more.get("asked") is not case["asked"]:
+        problems.append(f"asked is {more.get('asked')}, expected {case['asked']}")
+    if "replaces" in case and not any(o.lower() in str(more.get("replaces") or "").lower() for o in case["replaces"]):
+        problems.append(f"replaces is {more.get('replaces')!r}, expected it to hold {case['replaces']}")
     if "memory" in case and used is not None and sorted(set(used)) != sorted(case["memory"]):
         problems.append(f"memory {sorted(set(used))}, expected {sorted(case['memory'])}")
     if "memory_any" in case and used is not None and (not used or not set(used) <= set(case["memory_any"])):
@@ -273,7 +291,7 @@ def ask(case, key, model, effort, system, images, home):
         if opens >= MAX_OPENS:
             body["tool_choice"] = {"type": "none"}
     kind, text = parse_answer(resp, seen_images)
-    return kind, text, int((time.time() - started) * 1000), used
+    return kind, text, int((time.time() - started) * 1000), used, extras(resp)
 
 
 def main(argv=None):
@@ -302,8 +320,8 @@ def main(argv=None):
         results = list(pool.map(lambda c: ask(c, key, args.model, args.effort, system, images, home), cases))
 
     passed = 0
-    for case, (kind, text, ms, used) in zip(cases, results):
-        problems = grade(case, kind, text, None if args.no_memory else used) if kind else [text]
+    for case, (kind, text, ms, used, more) in zip(cases, results):
+        problems = grade(case, kind, text, None if args.no_memory else used, more) if kind else [text]
         passed += not problems
         mark = "PASS" if not problems else "FAIL"
         memo = f"  [{', '.join(used)}]" if used else ""

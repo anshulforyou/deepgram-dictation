@@ -792,6 +792,60 @@ describe("screen questions", function()
     end)
   end)
 
+  describe("asked and replaces", function()
+    local function reply(value)
+      return { stop_reason = "end_turn", content = { { type = "text", text = "x" } } }, function() return value end
+    end
+
+    it("an insert that fixes text on screen carries what it replaces", function()
+      local r, decode = reply({ kind = "insert", text = "Fixed.", replaces = "  Fixd.  ", asked = true })
+      assert.are.same({ kind = "insert", text = "Fixed.", replaces = "Fixd." }, core.parseScreenAnswer(r, decode))
+      r, decode = reply({ kind = "insert", text = "Hi.", replaces = "", asked = false })
+      assert.are.same({ kind = "insert", text = "Hi." }, core.parseScreenAnswer(r, decode))
+    end)
+
+    it("a fill or work they asked for outright says so", function()
+      local fields = { { label = "Name", value = "Nowhere", upload = "", skip = false } }
+      local r, decode = reply({ kind = "fill", text = "", fields = fields, asked = true })
+      assert.is_true(core.parseScreenAnswer(r, decode).asked)
+      r, decode = reply({ kind = "fill", text = "", fields = fields, asked = false })
+      assert.is_nil(core.parseScreenAnswer(r, decode).asked)
+      r, decode = reply({ kind = "work", text = "Rename it", asked = true })
+      assert.is_true(core.parseScreenAnswer(r, decode).asked)
+    end)
+  end)
+
+  describe("findSpan", function()
+    local para = "Hello team.\n\nThe program is not structured at all. I have to go back and forth.\n\nThanks"
+
+    it("finds the exact text", function()
+      assert.are.same({ location = 13, length = 15 }, core.findSpan(para, "The program is "))
+    end)
+
+    it("ignores line breaks, spacing and curly quotes read off the screen", function()
+      local value = "It\u{2019}s fine.\nThe   program  is\nnot structured."
+      assert.are.same({ location = 0, length = utf8.len(value) },
+        core.findSpan(value, "It's fine. The program is not structured."))
+    end)
+
+    it("finds it by its first and last words when a letter in the middle was misread", function()
+      local original = "The program is not structured at all. I have to go back and forth."
+      local misread = original:gsub("structured", "strucrured")
+      assert.are.same({ location = 13, length = #original }, core.findSpan(para, misread))
+    end)
+
+    it("counts in UTF-16 units like Accessibility does", function()
+      assert.are.same({ location = 4, length = 5 }, core.findSpan("\u{1F600}é hello", "hello"))
+    end)
+
+    it("gives up when it isn't there or is ambiguous", function()
+      assert.is_nil(core.findSpan(para, "Something else entirely that was never written here."))
+      assert.is_nil(core.findSpan("abc abc", ""))
+      local twice = "The same opening words here, then A. The same opening words here, then B."
+      assert.is_nil(core.findSpan(twice .. " end", "The same opening words here, then C."))
+    end)
+  end)
+
   describe("panelOrigin", function()
     local frame = { x = 0, y = 25, w = 1920, h = 1055 }
 
