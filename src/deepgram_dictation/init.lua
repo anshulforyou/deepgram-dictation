@@ -167,7 +167,7 @@ local function fillForm(answer, s, recording, record)
       if #skipped > 0 then
         summary = summary .. "\n\nLeft empty, not in your memory: " .. table.concat(skipped, "; ")
       end
-      overlay.showPanel(summary, "Filled. Check it, then save")
+      overlay.showPanel({ gist = core.fillGist(answer.fields), body = summary }, "Filled")
     else
       overlay.showPanel((info.status == "stopped" and "Stopped: " or "Couldn't fill it: ") .. tostring(info.reason)
         .. ". Anything already typed is still there.", info.status == "stopped" and "Stopped" or "Couldn't fill", true)
@@ -207,13 +207,13 @@ end
 -- once the user says yes, or straight away when they told her outright to make them.
 local function workOnPage(answer, s, recording, record, info)
   local scr = s.shot.screen
-  local function ended(summary, result, title)
+  local function ended(summary, result, title, gist)
     overlay.hideGlow()
     if not recorder then setIndicator(nil) end
     local sound = ({ done = "done", error = "error" })[result.status]
     if sound then sounds.play(sound) end
     if result.status == "done" then
-      overlay.showPanel(summary or "Done.", title)
+      overlay.showPanel({ gist = gist, body = summary or "Done." }, title)
     else
       overlay.showPanel((result.status == "stopped" and "Stopped: " or "Couldn't do it: ") .. tostring(result.reason)
         .. ". Anything already changed is still there.", result.status == "stopped" and "Stopped" or "Couldn't do it",
@@ -227,7 +227,7 @@ local function workOnPage(answer, s, recording, record, info)
     screenFill.run(fields, scr, function(n)
       if not recorder then setIndicator("filling", n) end
     end, function(summary, result)
-      ended(summary, result, "Done. Check it, then publish")
+      ended(summary, result, "Done", core.fillGist(fields, "work"))
       record.screen.work = { status = result.status, reason = result.reason, ms = result.ms,
                              actions = result.actions, summary = summary }
       saveScreen(recording, record)
@@ -376,8 +376,8 @@ local function answerScreen(raw, recording, record, s)
     if answer and answer.kind == "insert" then
       pasteText(answer.text)
     elseif answer then
-      hs.pasteboard.setContents(answer.text)
-      overlay.showPanel(answer.text, "Copied")
+      hs.pasteboard.setContents(core.unmark(answer.text))
+      overlay.showPanel({ gist = answer.gist, body = answer.text }, "Copied")
     else
       hs.pasteboard.setContents(raw)
       overlay.showPanel(tostring(info.reason) .. "\n\nYour question is on the clipboard.", "Couldn't answer", true)

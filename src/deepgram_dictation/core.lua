@@ -506,6 +506,7 @@ core.SCREEN_SCHEMA = {
     text = { type = "string" },
     asked = { type = "boolean" },    -- they told her outright to do it: a fill or work starts without asking
     replaces = { type = "string" },  -- for insert: the text on screen it replaces, exactly, else ""
+    gist = { type = "string" },      -- for answer: the whole answer in one short line, shown bold on top
     fields = {
       type = "array",
       items = {
@@ -534,7 +535,7 @@ core.SCREEN_SCHEMA = {
       additionalProperties = false,
     },
   },
-  required = { "kind", "text", "asked", "replaces", "fields", "task" },
+  required = { "kind", "text", "gist", "asked", "replaces", "fields", "task" },
   additionalProperties = false,
 }
 
@@ -676,7 +677,9 @@ function core.parseScreenAnswer(resp, decode, images)
       and type(value.text) == "string" and value.text:match("%S") then
     local replaces = value.kind == "insert" and type(value.replaces) == "string"
       and value.replaces:match("^%s*(.-)%s*$") or ""
-    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil }
+    local gist = value.kind == "answer" and type(value.gist) == "string" and value.gist:match("^%s*(.-)%s*$") or ""
+    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil,
+             gist = gist ~= "" and gist or nil }
   end
   return { kind = "answer", text = raw }
 end
@@ -1428,5 +1431,46 @@ function core.taskReport(state, lastText)
   return type(state) == "table" and type(state.detail) == "string" and state.detail or ""
 end
 
+
+-- Text grandma marked for skimming, "**key words**", as runs { { text, hi } } plus the text with
+-- the marks taken out (what gets copied). A "**" with no partner stays as it is.
+function core.highlightRuns(text)
+  text = tostring(text or "")
+  local marks, from = {}, 1
+  while true do
+    local a = text:find("**", from, true)
+    if not a then break end
+    table.insert(marks, a)
+    from = a + 2
+  end
+  if #marks % 2 == 1 then table.remove(marks) end
+  local runs, pos = {}, 1
+  for i = 1, #marks, 2 do
+    local a, b = marks[i], marks[i + 1]
+    if a > pos then table.insert(runs, { text = text:sub(pos, a - 1), hi = false }) end
+    if b > a + 2 then table.insert(runs, { text = text:sub(a + 2, b - 1), hi = true }) end
+    pos = b + 2
+  end
+  if pos <= #text then table.insert(runs, { text = text:sub(pos), hi = false }) end
+  local plain = {}
+  for _, r in ipairs(runs) do table.insert(plain, r.text) end
+  return runs, table.concat(plain)
+end
+
+-- `text` with grandma's "**" marks taken out.
+function core.unmark(text) return select(2, core.highlightRuns(text)) end
+
+-- The panel's one-line gist after a fill or a page edit: what was done, and what was left.
+function core.fillGist(fields, status)
+  local done, left = 0, 0
+  for _, f in ipairs(fields or {}) do
+    if f.skip then left = left + 1 else done = done + 1 end
+  end
+  local verb = status == "work" and "Changed" or "Filled"
+  local noun = status == "work" and "part" or "field"
+  local out = string.format("%s %d %s%s", verb, done, noun, done == 1 and "" or "s")
+  if left > 0 then out = out .. string.format(", %d left empty", left) end
+  return out .. ". Check it, then save."
+end
 
 return core

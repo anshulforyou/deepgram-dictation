@@ -815,6 +815,29 @@ describe("screen questions", function()
     end)
   end)
 
+  describe("highlightRuns", function()
+    it("splits marked words from the rest and gives the text without marks", function()
+      local runs, plain = core.highlightRuns("I **can't find a link** here. Click **Reply**.")
+      assert.are.same({ { text = "I ", hi = false }, { text = "can't find a link", hi = true },
+                        { text = " here. Click ", hi = false }, { text = "Reply", hi = true },
+                        { text = ".", hi = false } }, runs)
+      assert.are.equal("I can't find a link here. Click Reply.", plain)
+    end)
+
+    it("leaves text with no marks, or a lone mark, alone", function()
+      assert.are.same({ { text = "plain", hi = false } }, (core.highlightRuns("plain")))
+      assert.are.equal("a ** b", core.unmark("a ** b"))
+      assert.are.equal("", core.unmark(nil))
+      assert.are.equal("ab", core.unmark("a****b"))
+    end)
+
+    it("writes the gist after a fill or a page edit", function()
+      local fields = { { skip = false }, { skip = true }, { skip = true } }
+      assert.are.equal("Filled 1 field, 2 left empty. Check it, then save.", core.fillGist(fields))
+      assert.are.equal("Changed 2 parts. Check it, then save.", core.fillGist({ {}, {} }, "work"))
+    end)
+  end)
+
   describe("findSpan", function()
     local para = "Hello team.\n\nThe program is not structured at all. I have to go back and forth.\n\nThanks"
 

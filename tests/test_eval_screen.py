@@ -64,6 +64,17 @@ class ExtrasTest(unittest.TestCase):
                                                  "insert", "Fixed.", None, more))
         self.assertEqual({}, ev.extras({"content": [{"type": "text", "text": "plain"}]}))
 
+    def test_answers_must_be_marked_and_have_a_gist_and_inserts_must_not_be_marked(self):
+        resp = {"stop_reason": "end_turn", "content": [{"type": "text", "text":
+                '{"kind": "answer", "text": "Click **Billing**, in the **left sidebar**.", "gist": "Billing, left sidebar."}'}]}
+        self.assertEqual(("answer", "Click Billing, in the left sidebar."), ev.parse_answer(resp))
+        more = ev.extras(resp)
+        self.assertEqual(2, more["marks"])
+        self.assertEqual([], ev.grade({"kind": "answer"}, "answer", "x", None, more))
+        self.assertEqual(["0 marked phrases, expected 1 to 8", "gist '', expected one short line"],
+                         ev.grade({"kind": "answer"}, "answer", "x", None, {"marks": 0, "gist": ""}))
+        self.assertEqual(["text to paste has ** marks"], ev.grade({"kind": "insert"}, "insert", "x", None, {"marks": 1}))
+
 
 class TaskTest(unittest.TestCase):
     TASK = ('{"kind": "task", "text": "x", "fields": [], "task": {"title": "Review PR 42", "goal": "Review it",'

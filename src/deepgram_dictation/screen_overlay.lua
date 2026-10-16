@@ -83,32 +83,72 @@ local W, PAD = 440, 20
 local HEADER = 22
 local BODY_SIZE, LINE_SPACING = 14, 3
 
-local function styled(text, size, color, weight, alignment)
+local function styled(text, size, color, weight, alignment, alpha)
   return hs.styledtext.new(text, {
     font = { name = weight == "bold" and ".AppleSystemUIFontBold" or ".AppleSystemUIFont", size = size },
-    color = rgb(color),
+    color = rgb(color, alpha),
     paragraphStyle = { lineSpacing = LINE_SPACING, alignment = alignment or "natural" },
   })
 end
 
--- Height `text` needs at `width`. Canvas only measures a single line, so this wraps words the
--- way the text element will and counts the lines.
-local function textHeight(c, text, width, isError)
-  c:appendElements({ type = "text", text = "", frame = { x = 0, y = 0, w = width, h = 10 } })
+local GIST_SIZE, GIST_GAP = 15, 10
+local DIM = 0.62 -- the rest of the text, when some words are marked
+
+-- The body as styled text: words grandma marked ("**...**") bright and bold, the rest dimmed so
+-- the marked words read on their own. Text with no marks keeps its usual colour.
+local function bodyText(runs, isError)
   local color = isError and M.ROSE_LIGHT or PANEL_TEXT
-  local function measure(s) return c:minimumTextSize(1, styled(s, BODY_SIZE, color)) end
-  local lineH = measure("Ag").h
+  local marked = false
+  for _, r in ipairs(runs) do if r.hi then marked = true end end
+  local out = styled("", BODY_SIZE, color)
+  for _, r in ipairs(runs) do
+    out = out .. styled(r.text, BODY_SIZE, r.hi and "ffffff" or color, r.hi and "bold" or nil, nil,
+      (marked and not r.hi) and DIM or 1)
+  end
+  return out
+end
+
+-- Height `runs` need at `width`, in `size` (bold throughout when `allBold`). Canvas only measures
+-- a single line, so this wraps words the way the text element will, measuring marked words bold.
+local function textHeight(c, runs, width, size, allBold)
+  c:appendElements({ type = "text", text = "", frame = { x = 0, y = 0, w = width, h = 10 } })
+  local function measure(words)
+    local st = styled("", size, PANEL_TEXT)
+    for i, word in ipairs(words) do
+      if i > 1 then st = st .. styled(" ", size, PANEL_TEXT) end
+      for _, chunk in ipairs(word) do
+        st = st .. styled(chunk.text, size, PANEL_TEXT, (allBold or chunk.hi) and "bold" or nil)
+      end
+    end
+    return c:minimumTextSize(1, st)
+  end
+  local lineH = measure({ { { text = "Ag" } } }).h
+  -- Paragraphs of words, each word a list of chunks (a word can be part marked: "**link**,").
+  local paragraphs, word = { {} }, nil
+  for _, r in ipairs(runs) do
+    for space, piece in r.text:gmatch("(%s*)(%S*)") do
+      if space ~= "" then
+        word = nil
+        for _ in space:gmatch("\n") do table.insert(paragraphs, {}) end
+      end
+      if piece ~= "" then
+        if not word then
+          word = {}
+          table.insert(paragraphs[#paragraphs], word)
+        end
+        table.insert(word, { text = piece, hi = r.hi })
+      end
+    end
+  end
   local lines = 0
-  for paragraph in (text .. "\n"):gmatch("(.-)\n") do
-    local line = ""
+  for _, words in ipairs(paragraphs) do
+    local line = {}
     lines = lines + 1
-    for word in paragraph:gmatch("%S+") do
-      local candidate = line == "" and word or (line .. " " .. word)
-      if line ~= "" and measure(candidate).w > width - 6 then
+    for _, w in ipairs(words) do
+      table.insert(line, w)
+      if #line > 1 and measure(line).w > width - 6 then
         lines = lines + 1
-        line = word
-      else
-        line = candidate
+        line = { w }
       end
     end
   end
@@ -131,7 +171,8 @@ function M.closePanel(fade)
   if cancel then cancel("replaced") end
 end
 
--- Shows `text` next to the mouse, on whichever display it is on now. `note` is the small line in
+-- Shows `text` next to the mouse, on whichever display it is on now. `text` may be { gist, body }:
+-- the gist is one bold line on top. Words marked "**like this**" stand out from the rest. `note` is the small line in
 -- the header ("Copied"). Closes on a click on the panel, on Esc, or when the next dictation starts.
 -- With `keys` ({ onReturn, onEscape }) it asks: Return and Esc are answered here and never reach
 -- the app underneath (so Return can't submit a form), and a click counts as Esc. `pictures`
@@ -140,13 +181,22 @@ local THUMB, CAPTION = 84, 18
 function M.showPanel(text, note, isError, keys, pictures)
   pictures = pictures or {}
   M.closePanel()
+  local gist
+  if type(text) == "table" then
+    gist = text.gist and core.unmark(text.gist):match("^%s*(.-)%s*$")
+    text = text.body
+    if gist == "" then gist = nil end
+  end
+  local runs = core.highlightRuns(text)
   local frame = (hs.mouse.getCurrentScreen() or hs.screen.mainScreen()):frame()
-  local body = styled(text, BODY_SIZE, isError and M.ROSE_LIGHT or PANEL_TEXT)
-  local maxBody = math.floor(frame.h * 0.7) - HEADER - 3 * PAD
+  local body = bodyText(runs, isError)
   local c = hs.canvas.new({ x = 0, y = 0, w = W, h = 100 })
-  local bodyH = math.min(textHeight(c, text, W - 2 * PAD, isError), maxBody)
+  local gistH = gist and textHeight(c, { { text = gist } }, W - 2 * PAD, GIST_SIZE, true) or 0
+  local top = PAD + HEADER + 10 + (gist and gistH + GIST_GAP or 0)
+  local maxBody = math.floor(frame.h * 0.7) - top - PAD
+  local bodyH = math.min(textHeight(c, runs, W - 2 * PAD, BODY_SIZE), maxBody)
   local shelf = #pictures > 0 and (12 + THUMB + CAPTION) or 0
-  local h = PAD + HEADER + 10 + bodyH + shelf + PAD
+  local h = top + bodyH + shelf + PAD
   c:size({ w = W, h = h })
   c:topLeft(core.panelOrigin(hs.mouse.absolutePosition(), W, h, frame))
   c:appendElements({
@@ -159,12 +209,16 @@ function M.showPanel(text, note, isError, keys, pictures)
       frame = { x = PAD + 16, y = PAD + 2, w = 200, h = HEADER } },
     { type = "text", text = styled(note or "", 12, PANEL_MUTED, nil, "right"),
       frame = { x = W - PAD - 200, y = PAD + 3, w = 200, h = HEADER } },
-    { type = "text", text = body, frame = { x = PAD, y = PAD + HEADER + 10, w = W - 2 * PAD, h = bodyH } },
+    { type = "text", text = body, frame = { x = PAD, y = top, w = W - 2 * PAD, h = bodyH } },
   })
+  if gist then
+    c:appendElements({ type = "text", text = styled(gist, GIST_SIZE, "ffffff", "bold"),
+                       frame = { x = PAD, y = PAD + HEADER + 10, w = W - 2 * PAD, h = gistH } })
+  end
   local slot = math.floor((W - 2 * PAD) / math.max(1, math.min(#pictures, 4)))
   for i, pic in ipairs(pictures) do
     if i > 4 then break end
-    local x, y = PAD + (i - 1) * slot, PAD + HEADER + 10 + bodyH + 12
+    local x, y = PAD + (i - 1) * slot, top + bodyH + 12
     local image = hs.image.imageFromPath(pic.path)
     if image then
       c:appendElements({ type = "image", image = image, imageScaling = "scaleProportionally",
