@@ -676,7 +676,8 @@ describe("screen questions", function()
 
     it("asks for the answer in a fixed shape", function()
       assert.are.equal("json_schema", body.output_config.format.type)
-      assert.are.same({ "insert", "answer", "fill" }, body.output_config.format.schema.properties.kind.enum)
+      assert.are.same({ "insert", "answer", "fill", "task", "work" },
+        body.output_config.format.schema.properties.kind.enum)
       assert.are.equal("low", body.output_config.effort)
     end)
 
@@ -788,6 +789,60 @@ describe("screen questions", function()
         select(2, core.parseScreenAnswer({ type = "error", error = { message = "overloaded" } }, decode)))
       assert.are.equal("empty answer", select(2, core.parseScreenAnswer(reply("  "), decode)))
       assert.are.equal("unexpected response", select(2, core.parseScreenAnswer(nil, decode)))
+    end)
+  end)
+
+  describe("asked and replaces", function()
+    local function reply(value)
+      return { stop_reason = "end_turn", content = { { type = "text", text = "x" } } }, function() return value end
+    end
+
+    it("an insert that fixes text on screen carries what it replaces", function()
+      local r, decode = reply({ kind = "insert", text = "Fixed.", replaces = "  Fixd.  ", asked = true })
+      assert.are.same({ kind = "insert", text = "Fixed.", replaces = "Fixd." }, core.parseScreenAnswer(r, decode))
+      r, decode = reply({ kind = "insert", text = "Hi.", replaces = "", asked = false })
+      assert.are.same({ kind = "insert", text = "Hi." }, core.parseScreenAnswer(r, decode))
+    end)
+
+    it("a fill or work they asked for outright says so", function()
+      local fields = { { label = "Name", value = "Nowhere", upload = "", skip = false } }
+      local r, decode = reply({ kind = "fill", text = "", fields = fields, asked = true })
+      assert.is_true(core.parseScreenAnswer(r, decode).asked)
+      r, decode = reply({ kind = "fill", text = "", fields = fields, asked = false })
+      assert.is_nil(core.parseScreenAnswer(r, decode).asked)
+      r, decode = reply({ kind = "work", text = "Rename it", asked = true })
+      assert.is_true(core.parseScreenAnswer(r, decode).asked)
+    end)
+  end)
+
+  describe("findSpan", function()
+    local para = "Hello team.\n\nThe program is not structured at all. I have to go back and forth.\n\nThanks"
+
+    it("finds the exact text", function()
+      assert.are.same({ location = 13, length = 15 }, core.findSpan(para, "The program is "))
+    end)
+
+    it("ignores line breaks, spacing and curly quotes read off the screen", function()
+      local value = "It\u{2019}s fine.\nThe   program  is\nnot structured."
+      assert.are.same({ location = 0, length = utf8.len(value) },
+        core.findSpan(value, "It's fine. The program is not structured."))
+    end)
+
+    it("finds it by its first and last words when a letter in the middle was misread", function()
+      local original = "The program is not structured at all. I have to go back and forth."
+      local misread = original:gsub("structured", "strucrured")
+      assert.are.same({ location = 13, length = #original }, core.findSpan(para, misread))
+    end)
+
+    it("counts in UTF-16 units like Accessibility does", function()
+      assert.are.same({ location = 4, length = 5 }, core.findSpan("\u{1F600}é hello", "hello"))
+    end)
+
+    it("gives up when it isn't there or is ambiguous", function()
+      assert.is_nil(core.findSpan(para, "Something else entirely that was never written here."))
+      assert.is_nil(core.findSpan("abc abc", ""))
+      local twice = "The same opening words here, then A. The same opening words here, then B."
+      assert.is_nil(core.findSpan(twice .. " end", "The same opening words here, then C."))
     end)
   end)
 
@@ -1162,5 +1217,150 @@ describe("bridgeMic", function()
     assert.are.equal("BuiltInMicrophoneDevice", core.bridgeMic(core.mergeConfig(), "Bluetooth LE", inputs))
     assert.is_nil(core.bridgeMic(core.mergeConfig(), "Bluetooth", { inputs[1] }))
     assert.is_nil(core.bridgeMic(core.mergeConfig({ bridgeBluetoothMic = false }), "Bluetooth", inputs))
+  end)
+end)
+
+describe("background tasks", function()
+  local function reply(text) return { stop_reason = "end_turn", content = { { type = "text", text = text } } } end
+  local review = { title = " Review PR 12 ", goal = "Review the pull request",
+                   target = "https://github.com/a/b/pull/12", memory = "deepgram-dictation", edits = false,
+                   minutes = 5 }
+
+  it("reads a task answer into a clean task", function()
+    local answer = core.parseScreenAnswer(reply("T"), function()
+      return { kind = "task", text = "Reviewing", task = review }
+    end)
+    assert.are.same({ kind = "task", text = "Reviewing", task = {
+      title = "Review PR 12", goal = "Review the pull request", target = "https://github.com/a/b/pull/12",
+      memory = "deepgram-dictation", edits = false, minutes = 5 } }, answer)
+  end)
+
+  it("shows a task with no goal as an answer rather than starting it", function()
+    local answer = core.parseScreenAnswer(reply("T"), function()
+      return { kind = "task", text = "Something", task = { title = "x", goal = " " } }
+    end)
+    assert.are.equal("answer", answer.kind)
+  end)
+
+  it("titles an untitled task from its goal", function()
+    assert.are.equal("Review the pull request", core.taskFrom({ goal = "Review the pull request" }).title)
+  end)
+
+  it("starts a quick read-only task with a clear target at once", function()
+    assert.is_false(core.taskNeedsConfirm(core.taskFrom(review)))
+  end)
+
+  it("asks first when the task may change code, has no target, or is long", function()
+    local function with(k, v)
+      local t = core.taskFrom(review)
+      t[k] = v
+      return t
+    end
+    assert.is_true(core.taskNeedsConfirm(with("edits", true)))
+    assert.is_true(core.taskNeedsConfirm(with("target", "")))
+    assert.is_true(core.taskNeedsConfirm(with("minutes", 30)))
+    assert.is_false(core.taskNeedsConfirm(with("minutes", 10)))
+  end)
+
+  it("says on the confirm card whether she may change code", function()
+    local t = core.taskFrom(review)
+    assert.truthy(core.taskPlanText(t):find("only reads", 1, true))
+    t.edits = true
+    assert.truthy(core.taskPlanText(t):find("own worktree", 1, true))
+  end)
+
+  it("tells about a session only when it reaches a new end state", function()
+    assert.are.equal("blocked", core.taskEvent("working", { state = "blocked" }))
+    assert.are.equal("done", core.taskEvent("working", { state = "done" }))
+    assert.is_nil(core.taskEvent("working", { state = "working" }))
+    assert.is_nil(core.taskEvent("done", { state = "done" }))
+    assert.is_nil(core.taskEvent("working", nil))
+  end)
+
+  it("reports her last message, else the result, else the detail", function()
+    local state = { detail = "short", output = { result = "the result" } }
+    assert.are.equal("full text", core.taskReport(state, "  full text\n"))
+    assert.are.equal("the result", core.taskReport(state, nil))
+    assert.are.equal("short", core.taskReport({ detail = "short" }, ""))
+  end)
+
+  it("checks the task options", function()
+    assert.has_error(function() core.mergeConfig({ maxTasks = 0 }) end)
+    assert.has_error(function() core.mergeConfig({ taskWorkspace = "" }) end)
+    assert.is_true(core.mergeConfig({ taskModel = "opus" }).backgroundTasks)
+  end)
+end)
+
+describe("working on a page", function()
+  local fields = { { label = "Hero heading", value = "Meet the Trailrunner 2", skip = false },
+                   { label = "Hero body", value = "Light at 268 g.\nSix millimetre drop.", skip = false } }
+
+  it("only looks while surveying", function()
+    assert.is_true(core.checkWorkAction("survey", "screenshot", {}, {}))
+    assert.is_true(core.checkWorkAction("survey", "scroll", {}, {}))
+    assert.is_false(core.checkWorkAction("survey", "left_click", {}, {}))
+    assert.is_false(core.checkWorkAction("survey", "type", { text = "x" }, {}))
+  end)
+
+  it("types only the confirmed text, whole or a line at a time", function()
+    assert.is_true(core.checkWorkAction("work", "type", { text = "Meet the Trailrunner 2" }, fields))
+    assert.is_true(core.checkWorkAction("work", "type", { text = "Six millimetre drop." }, fields))
+    assert.is_true(core.checkWorkAction("work", "type", { text = "Light at 268 g.\nSix millimetre drop." }, fields))
+    assert.is_false(core.checkWorkAction("work", "type", { text = "Buy now" }, fields))
+    assert.is_false(core.checkWorkAction("work", "type", { text = "" }, fields))
+  end)
+
+  it("allows undo, save and new lines, never other keys", function()
+    assert.is_true(core.checkWorkAction("work", "key", { text = "cmd+s" }, fields))
+    assert.is_true(core.checkWorkAction("work", "key", { text = "shift+Return" }, fields))
+    assert.is_true(core.checkWorkAction("work", "double_click", { coordinate = { 1, 1 } }, fields))
+    assert.is_false(core.checkWorkAction("work", "key", { text = "cmd+enter" }, fields))
+    assert.is_false(core.checkWorkAction("work", "left_click_drag", {}, fields))
+  end)
+
+  it("clicks buttons and links but never anything that publishes, sends, pays or deletes", function()
+    assert.is_true(core.workClickAllowed("AXButton", nil, "Save draft"))
+    assert.is_true(core.workClickAllowed("AXLink", nil, "Features"))
+    assert.is_true(core.workClickAllowed("AXGroup", nil, nil))
+    for _, label in ipairs({ "Publish", "Update site", "Send", "Delete block", "Go live", "Share", "Pay now" }) do
+      assert.is_false(core.workClickAllowed("AXButton", nil, label), label)
+    end
+    assert.is_false(core.workClickAllowed("AXTextField", "AXSecureTextField", "Password"))
+  end)
+
+  it("doesn't refuse words that only contain a refused one", function()
+    assert.is_true(core.workClickAllowed("AXButton", nil, "Updates feed"))
+    assert.is_true(core.workClickAllowed("AXButton", nil, "Postcode"))
+  end)
+
+  it("says when an unlabelled button couldn't be checked", function()
+    local ok, _, unchecked = core.workClickAllowed("AXButton", nil, nil)
+    assert.is_true(ok)
+    assert.is_true(unchecked)
+  end)
+
+  it("turns a proposal into confirmed fields, with uploads from memory images", function()
+    local images = { { id = "img-1", path = "/m/hero.jpg", name = "hero.jpg" } }
+    local f, summary = core.parseProposal({ summary = " Two changes ", changes = {
+      { where = "Hero heading", text = "Meet the Trailrunner 2", upload = "" },
+      { where = "Hero image", text = "", upload = "img-1" },
+      { where = "Bad", text = "", upload = "img-9" },
+    } }, images)
+    assert.are.equal("Two changes", summary)
+    assert.are.equal("Meet the Trailrunner 2", f[1].value)
+    assert.are.equal("/m/hero.jpg", f[2].file.path)
+    assert.is_true(f[3].skip)
+    assert.truthy(core.proposalText(f, summary):find("upload hero.jpg", 1, true))
+  end)
+
+  it("gives a survey only looking tools and the propose tool, and work the confirmed uploads", function()
+    local survey = core.workRequest(core.mergeConfig(), "P", "survey", "goal", {}, "IMG",
+      { blocks = { { name = "acme", text = "facts" } }, images = {} })
+    assert.are.equal("propose_changes", survey.tools[2].name)
+    assert.is_false(survey.tools[1].configs.left_click.enabled)
+    local work = core.workRequest(core.mergeConfig(), "P", "work", "goal",
+      { { label = "Hero image", value = "", skip = false, file = { id = "img-1", path = "/x", name = "x" } } }, "IMG")
+    assert.is_nil(work.tools[1].configs.left_click)
+    assert.are.equal("upload_file", work.tools[2].name)
   end)
 end)

@@ -2,7 +2,7 @@ LUAROCKS_BIN ?= $(HOME)/.luarocks/bin
 BUSTED   ?= $(shell command -v busted 2>/dev/null || echo $(LUAROCKS_BIN)/busted)
 LUACHECK ?= $(shell command -v luacheck 2>/dev/null || echo $(LUAROCKS_BIN)/luacheck)
 
-.PHONY: test test-lua test-python test-swift test-install test-integration eval-dictation eval-screen render-screens render-badges sounds test-fill lint install uninstall
+.PHONY: test test-lua test-python test-swift test-install test-integration eval-dictation eval-screen render-screens render-badges sounds test-fill test-work lint install uninstall
 
 test: test-lua test-python test-swift test-install
 
@@ -37,6 +37,12 @@ eval-screen:
 test-fill:
 	tests/integration/fill.sh
 
+# Has grandma rework a test landing page in Brave (look through, propose, edit, save a draft) and
+# checks nothing was published (calls Anthropic's API). Takes over the mouse and keyboard for a
+# few minutes, so it's never run in CI.
+test-work:
+	tests/integration/work.sh
+
 # Re-renders tests/screens/*.html to the PNGs eval-screen uses (needs Chrome or Brave).
 render-screens:
 	scripts/render_screens.sh
@@ -50,7 +56,7 @@ sounds:
 
 lint:
 	$(LUACHECK) src spec scripts
-	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh dragger/build.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh scripts/render_badges.sh tests/integration/fill.sh
+	shellcheck install.sh uninstall.sh tests/test_install.sh recorder/build.sh recorder/test.sh dragger/build.sh tests/integration/mic_coexistence.sh scripts/render_screens.sh scripts/render_badges.sh tests/integration/fill.sh tests/integration/work.sh
 
 install:
 	./install.sh

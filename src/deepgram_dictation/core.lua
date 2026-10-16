@@ -61,12 +61,19 @@ core.DEFAULTS = {
   soundVolume      = 0.5,       -- 0 to 1, on top of the system volume
   dictationSounds  = false,     -- also a faint tick when a plain dictation starts and is pasted
   soundsOff        = nil,       -- e.g. { think = true }: names in src/deepgram_dictation/sounds/
+
+  -- Background tasks: "review this PR" starts a Claude Code session in the background (needs screenAssist)
+  backgroundTasks  = true,
+  taskWorkspace    = "~/Documents/grandma-tasks", -- where a task with no project folder runs
+  taskModel        = nil,       -- e.g. "opus"; nil uses the CLI's default model
+  taskMinutes      = 45,        -- a task still working after this long is stopped
+  maxTasks         = 3,         -- running at once
 }
 
 core.OPTIONS = {
   recBinary = true, dictionary = true, meetingLanguage = true, transcriptsDir = true,
   recorderApp = true, python = true, claudePath = true, claudeModel = true, grandmaHome = true,
-  soundsOff = true,
+  soundsOff = true, taskModel = true,
 }
 for k in pairs(core.DEFAULTS) do core.OPTIONS[k] = true end
 
@@ -185,6 +192,14 @@ function core.mergeConfig(overrides)
   end
   if cfg.screenAssist and core.HOTKEYS[cfg.hotkey].flag == core.SCREEN_FLAG then
     error("deepgram-dictation: screenAssist uses Control, so the hotkey can't be a Control key", 2)
+  end
+  for _, name in ipairs({ "taskMinutes", "maxTasks" }) do
+    if math.type(cfg[name]) ~= "integer" or cfg[name] < 1 then
+      error("deepgram-dictation: " .. name .. " must be a positive integer", 2)
+    end
+  end
+  if type(cfg.taskWorkspace) ~= "string" or cfg.taskWorkspace == "" then
+    error("deepgram-dictation: taskWorkspace must be a folder path", 2)
   end
   for _, name in ipairs({ "keepDictations", "keytermNames" }) do
     local n = cfg[name]
@@ -481,14 +496,16 @@ function core.wantsScreen(cfg, flags)
   return cfg.screenAssist == true and flags[core.SCREEN_FLAG] == true
 end
 
--- What grandma returns for a screen question: text to paste where the user is typing, or an
--- answer to show them.
--- answer, or fields grandma will fill in on screen once the user confirms.
+-- What grandma returns for a screen question: text to paste where the user is typing, an answer
+-- to show them, fields she will fill in on screen once the user confirms, or a task she hands to
+-- a background agent.
 core.SCREEN_SCHEMA = {
   type = "object",
   properties = {
-    kind = { type = "string", enum = { "insert", "answer", "fill" } },
+    kind = { type = "string", enum = { "insert", "answer", "fill", "task", "work" } },
     text = { type = "string" },
+    asked = { type = "boolean" },    -- they told her outright to do it: a fill or work starts without asking
+    replaces = { type = "string" },  -- for insert: the text on screen it replaces, exactly, else ""
     fields = {
       type = "array",
       items = {
@@ -503,8 +520,21 @@ core.SCREEN_SCHEMA = {
         additionalProperties = false,
       },
     },
+    task = {
+      type = "object",
+      properties = {
+        title = { type = "string" },   -- a few words, shown in notifications and the menu
+        goal = { type = "string" },    -- the task restated, complete enough to work from alone
+        target = { type = "string" },  -- what on screen it is about: a URL, a PR, a file; "" if none
+        memory = { type = "string" },  -- the sweater or project from the catalog it belongs to, or ""
+        edits = { type = "boolean" },  -- whether it may change code or files
+        minutes = { type = "integer" }, -- a rough guess of how long it takes
+      },
+      required = { "title", "goal", "target", "memory", "edits", "minutes" },
+      additionalProperties = false,
+    },
   },
-  required = { "kind", "text", "fields" },
+  required = { "kind", "text", "asked", "replaces", "fields", "task" },
   additionalProperties = false,
 }
 
@@ -631,14 +661,84 @@ function core.parseScreenAnswer(resp, decode, images)
     local fields = core.fillFields(value.fields, images)
     if #fields > 0 then
       return { kind = "fill", text = type(value.text) == "string" and value.text:match("^%s*(.-)%s*$") or "",
-               fields = fields }
+               fields = fields, asked = value.asked == true or nil }
     end
+  end
+  if ok and type(value) == "table" and value.kind == "work" and type(value.text) == "string"
+      and value.text:match("%S") then
+    return { kind = "work", text = value.text:match("^%s*(.-)%s*$"), asked = value.asked == true or nil }
+  end
+  if ok and type(value) == "table" and value.kind == "task" then
+    local task = core.taskFrom(value.task)
+    if task then return { kind = "task", text = type(value.text) == "string" and value.text or "", task = task } end
   end
   if ok and type(value) == "table" and (value.kind == "insert" or value.kind == "answer")
       and type(value.text) == "string" and value.text:match("%S") then
-    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$") }
+    local replaces = value.kind == "insert" and type(value.replaces) == "string"
+      and value.replaces:match("^%s*(.-)%s*$") or ""
+    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil }
   end
   return { kind = "answer", text = raw }
+end
+
+-- Text folded for matching what Claude read off a screenshot against a field's real value: runs
+-- of whitespace become one space and curly quotes straight ones. Returns the folded text and, for
+-- each of its bytes, the byte in `s` it came from.
+local FOLD = { ["\u{2018}"] = "'", ["\u{2019}"] = "'", ["\u{201C}"] = '"', ["\u{201D}"] = '"', ["\u{A0}"] = " " }
+local function fold(s)
+  local out, from = {}, {}
+  for pos, cp in utf8.codes(s) do
+    local ch = utf8.char(cp)
+    ch = FOLD[ch] or ch
+    if ch:match("^%s$") then
+      if #out > 0 and out[#out] ~= " " then table.insert(out, " ") table.insert(from, pos) end
+    else
+      for i = 1, #ch do table.insert(out, ch:sub(i, i)) table.insert(from, pos) end
+    end
+  end
+  if out[#out] == " " then table.remove(out) table.remove(from) end
+  return table.concat(out), from
+end
+
+-- UTF-16 code units in `s` (what Accessibility text ranges count).
+local function utf16Len(s)
+  local n = 0
+  for _, cp in utf8.codes(s) do n = n + (cp > 0xFFFF and 2 or 1) end
+  return n
+end
+
+-- Where `original` (as read off the screen) sits in `value` (the field's text), as an
+-- Accessibility range { location, length }, or nil. Exact first, then ignoring whitespace and
+-- quote style, then by its first and last words when a few letters in the middle were misread.
+function core.findSpan(value, original)
+  if type(value) ~= "string" or type(original) ~= "string" or not original:match("%S") then return nil end
+  if not utf8.len(value) or not utf8.len(original) then return nil end
+  local function range(first, last) -- byte positions in value, inclusive
+    return { location = utf16Len(value:sub(1, first - 1)), length = utf16Len(value:sub(first, last)) }
+  end
+  local a, b = value:find(original, 1, true)
+  if a then return range(a, b) end
+  local fv, from = fold(value)
+  local fo = fold(original)
+  local function lastByte(i) -- the last byte of the character folded byte i came from
+    local start = from[i]
+    local nextStart = #value + 1
+    for j = i + 1, #from do if from[j] ~= start then nextStart = from[j] break end end
+    return nextStart - 1
+  end
+  a, b = fv:find(fo, 1, true)
+  if a then return range(from[a], lastByte(b)) end
+  local edge = math.min(40, math.floor(#fo / 3))
+  if edge < 12 then return nil end
+  local head, tail = fo:sub(1, edge), fo:sub(-edge)
+  a = fv:find(head, 1, true)
+  if not a or fv:find(head, a + 1, true) then return nil end -- missing, or not one place
+  local t = fv:find(tail, a, true)
+  if not t then return nil end
+  b = t + #tail - 1
+  local span = b - a + 1
+  if span < #fo * 0.8 or span > #fo * 1.25 then return nil end
+  return range(from[a], lastByte(b))
 end
 
 -- The well-formed fields of a fill plan: { { label, value, skip, file } }. An upload field names
@@ -918,6 +1018,191 @@ function core.fillRequest(cfg, systemPrompt, fields, image)
   }
 end
 
+-- Working on a page on screen: grandma first looks through it (survey: screenshots and scrolling
+-- only) and proposes every change, then, once the user confirms, makes them (work). Work can
+-- click what fill can't (buttons, links, tabs, menus, to select blocks and open panels) and save
+-- drafts, but never anything that publishes, sends, pays or deletes. Typing stays limited to the
+-- confirmed text, as in fill.
+
+core.SURVEY_ACTIONS = { screenshot = true, zoom = true, scroll = true, wait = true, cursor_position = true }
+core.WORK_ACTIONS = {
+  screenshot = true, zoom = true, left_click = true, double_click = true, triple_click = true, type = true,
+  key = true, scroll = true, wait = true, cursor_position = true,
+}
+-- Keys beyond fill's: undo, save (a draft), and Return or Shift+Return, which screen_fill.lua only
+-- lets through while a multi-line text box has the focus.
+core.WORK_KEYS = { ["cmd+z"] = true, ["cmd+s"] = true, ["return"] = true, ["shift+return"] = true }
+core.NEWLINE_KEYS = { ["return"] = true, ["shift+return"] = true }
+-- Words on something she must never click while working: whatever goes live, goes out, costs
+-- money, or can't be undone.
+core.WORK_REFUSED = { "publish", "unpublish", "update", "deploy", "go live", "launch", "submit", "send", "pay",
+                      "buy", "checkout", "order", "purchase", "delete", "remove", "trash", "discard", "archive",
+                      "share", "invite", "sign out", "log out", "logout", "post", "schedule", "upgrade" }
+
+function core.workLimits(mode)
+  if mode == "survey" then return 40, 150 end
+  return 300, 1200
+end
+
+function core.workToolset(mode)
+  local allowed = mode == "survey" and core.SURVEY_ACTIONS or core.WORK_ACTIONS
+  local configs = {}
+  for _, name in ipairs({ "left_click", "triple_click", "double_click", "type", "key", "right_click", "middle_click",
+                          "left_click_drag", "mouse_move", "left_mouse_down", "left_mouse_up", "hold_key" }) do
+    if not allowed[name] then configs[name] = { enabled = false } end
+  end
+  return { type = "computer_toolset_20260801", configs = configs }
+end
+
+-- The key combo `text` names, as written in FILL_KEYS ("shift+tab").
+function core.keyCombo(text)
+  local mods, key = core.fillKey(text)
+  return (#mods > 0 and (table.concat(mods, "+") .. "+") or "") .. tostring(key)
+end
+
+-- Whether a work or survey action may run (see checkFillAction). While working, text is typed
+-- whole or one line of it at a time, so a long block of copy can go in paragraph by paragraph.
+function core.checkWorkAction(mode, name, input, fields, uploaded)
+  input = type(input) == "table" and input or {}
+  if mode == "survey" then
+    if core.SURVEY_ACTIONS[name] then return true end
+    return false, name .. " isn't allowed while looking through the page"
+  end
+  if name == "upload_file" then return core.checkFillAction(name, input, fields, uploaded) end
+  if not core.WORK_ACTIONS[name] then return false, name .. " isn't allowed" end
+  if name == "type" then
+    local text = type(input.text) == "string" and input.text or ""
+    if text == "" then return false, "nothing to type" end
+    for _, f in ipairs(fields or {}) do
+      if not f.skip and f.value ~= "" then
+        if f.value == text then return true end
+        for line in (f.value .. "\n"):gmatch("(.-)\n") do
+          if line ~= "" and line == text then return true end
+        end
+      end
+    end
+    return false, "only the text the user confirmed can be typed"
+  end
+  if name == "key" then
+    local combo = core.keyCombo(input.text)
+    if not (core.FILL_KEYS[combo] or core.WORK_KEYS[combo]) then
+      return false, "the " .. tostring(input.text) .. " key isn't allowed"
+    end
+    if input["repeat"] ~= nil and (type(input["repeat"]) ~= "number" or input["repeat"] > 30) then
+      return false, "too many repeats"
+    end
+  end
+  return true
+end
+
+-- Whether a click while working may land on an element with this role and label (core.clickTarget).
+-- Anything may be clicked except password fields and what reads like WORK_REFUSED. An element with
+-- no label (an editor drawn on a canvas) can't be checked: allowed, and `unchecked` says so.
+function core.workClickAllowed(role, subrole, label)
+  if subrole == "AXSecureTextField" then return false, "password fields are never filled" end
+  local text = tostring(label or ""):lower()
+  for _, word in ipairs(core.WORK_REFUSED) do
+    if text:find("%f[%a]" .. word .. "%f[%A]") then
+      return false, "it reads \"" .. tostring(label) .. "\", and she never publishes, sends, pays or deletes"
+    end
+  end
+  return true, nil, text == "" and core.FILL_PRESSABLE[role] == true
+end
+
+-- The tool she ends a survey with.
+function core.proposeTool(imageIds)
+  local change = {
+    type = "object",
+    properties = {
+      where = { type = "string" },  -- which block or field, as on screen
+      text = { type = "string" },   -- the exact new text, or "" for an upload
+      upload = { type = "string" }, -- a memory image id, or ""
+    },
+    required = { "where", "text", "upload" },
+    additionalProperties = false,
+  }
+  if #imageIds > 0 then change.properties.upload = { type = "string", enum = core.withEmpty(imageIds) } end
+  return {
+    name = "propose_changes",
+    description = "End the look-through with every change to make, in page order. The user confirms them "
+      .. "before anything is touched, and only this text can be typed afterwards.",
+    input_schema = {
+      type = "object",
+      properties = { summary = { type = "string" }, changes = { type = "array", items = change } },
+      required = { "summary", "changes" },
+      additionalProperties = false,
+    },
+  }
+end
+
+function core.withEmpty(list)
+  local out = { "" }
+  for _, v in ipairs(list) do table.insert(out, v) end
+  return out
+end
+
+-- A proposal as fill-style fields ({ label, value, skip, file }) and its summary.
+function core.parseProposal(input, images)
+  input = type(input) == "table" and input or {}
+  local list = {}
+  for _, c in ipairs(type(input.changes) == "table" and input.changes or {}) do
+    if type(c) == "table" then
+      table.insert(list, { label = c.where, value = c.text, upload = c.upload, skip = false })
+    end
+  end
+  local summary = type(input.summary) == "string" and input.summary:match("^%s*(.-)%s*$") or ""
+  return core.fillFields(list, images), summary
+end
+
+-- What the confirm card shows for a proposal.
+function core.proposalText(fields, summary)
+  local lines = {}
+  if summary ~= "" then table.insert(lines, summary) table.insert(lines, "") end
+  for _, f in ipairs(fields) do
+    if f.file then table.insert(lines, string.format("%s: upload %s", f.label, f.file.name))
+    elseif not f.skip then table.insert(lines, string.format("%s: %s", f.label, f.value)) end
+  end
+  table.insert(lines, "")
+  table.insert(lines, "Return to make these changes, Esc to cancel. She may save a draft, never publish.")
+  return table.concat(lines, "\n")
+end
+
+-- The request that starts a survey or a work run.
+function core.workRequest(cfg, systemPrompt, mode, goal, fields, image, memory)
+  local content = { { type = "text", text = "<task>" .. goal .. "</task>" } }
+  local tools = { core.workToolset(mode) }
+  if mode == "survey" then
+    for _, m in ipairs(memory and memory.blocks or {}) do
+      table.insert(content, { type = "text",
+        text = string.format('<memory name="%s">\n%s\n</memory>', m.name, m.text) })
+    end
+    local ids = {}
+    for _, block in ipairs(core.imageBlocks(memory and memory.images)) do table.insert(content, block) end
+    for _, img in ipairs(memory and memory.images or {}) do table.insert(ids, img.id) end
+    table.insert(tools, core.proposeTool(ids))
+    table.insert(content, { type = "text", text = "Look through the page, then call propose_changes." })
+  else
+    table.insert(content, { type = "text", text = core.fillPlanText(fields):gsub("^Fill in these fields on screen.",
+      "Make these confirmed changes on screen.") })
+    local uploads = {}
+    for id in pairs(core.fillUploads(fields)) do table.insert(uploads, id) end
+    table.sort(uploads)
+    if #uploads > 0 then table.insert(tools, core.uploadTool(uploads)) end
+  end
+  table.insert(content, { type = "image", source = { type = "base64", media_type = "image/jpeg", data = image } })
+  return {
+    model = cfg.screenModel,
+    max_tokens = 8192,
+    thinking = { type = "adaptive" },
+    output_config = { effort = cfg.screenEffort },
+    system = { { type = "text", text = systemPrompt .. "\n\n" .. (mode == "survey" and "Now: look through the page."
+      or "Now: make the changes."), cache_control = { type = "ephemeral" } } },
+    tools = tools,
+    messages = { { role = "user", content = content } },
+  }
+end
+
+
 -- Top-left corner for a `w` x `h` panel near `point`, kept inside `frame` with a margin.
 function core.panelOrigin(point, w, h, frame, margin)
   margin = margin or 16
@@ -1092,5 +1377,56 @@ function core.bridgeMic(cfg, default, inputs)
   end
   return nil
 end
+
+-- Background tasks ----------------------------------------------------------------------------
+
+core.TASK_CONFIRM_MINUTES = 10 -- a read-only task guessed to take longer than this asks first
+
+-- A well-formed task from the model's `task` object, or nil.
+function core.taskFrom(t)
+  if type(t) ~= "table" or type(t.goal) ~= "string" or not t.goal:match("%S") then return nil end
+  local function str(v) return type(v) == "string" and v:match("^%s*(.-)%s*$") or "" end
+  local title = str(t.title)
+  return { title = title ~= "" and title or str(t.goal):sub(1, 40), goal = str(t.goal), target = str(t.target),
+           memory = str(t.memory), edits = t.edits == true, minutes = tonumber(t.minutes) or 0 }
+end
+
+-- Whether a task waits for the user's yes. A minor task (read-only, a clear target, quick) starts
+-- at once; one that may change code, has nothing on screen to work from, or is long asks first.
+-- Decided here, not by the model: a task started without asking never gets the edit tools.
+function core.taskNeedsConfirm(task)
+  return task.edits or task.target == "" or task.minutes > core.TASK_CONFIRM_MINUTES
+end
+
+-- What the confirm card says.
+function core.taskPlanText(task)
+  local lines = { task.goal }
+  if task.target ~= "" then table.insert(lines, "On: " .. task.target) end
+  if task.memory ~= "" then table.insert(lines, "With grandma's memory of " .. task.memory) end
+  table.insert(lines, "")
+  table.insert(lines, task.edits and "She may change code, on a new branch in her own worktree. Nothing is pushed."
+    or "She only reads and looks things up.")
+  table.insert(lines, "Return to start it in the background, Esc to cancel.")
+  return table.concat(lines, "\n")
+end
+
+-- What changed in a background session, from the state it was last seen in (`was`) and its
+-- Claude Code state.json (`state`): "blocked" (she needs the user), "done", "failed", "stopped",
+-- or nil when there's nothing to tell.
+core.TASK_ENDS = { blocked = true, done = true, failed = true, stopped = true }
+function core.taskEvent(was, state)
+  local now = type(state) == "table" and state.state or nil
+  if type(now) ~= "string" or now == was or not core.TASK_ENDS[now] then return nil end
+  return now
+end
+
+-- What she says back, from state.json: her last message (the timeline's last text), else her result.
+function core.taskReport(state, lastText)
+  if type(lastText) == "string" and lastText:match("%S") then return lastText:match("^%s*(.-)%s*$") end
+  local out = type(state) == "table" and type(state.output) == "table" and state.output.result
+  if type(out) == "string" and out:match("%S") then return out end
+  return type(state) == "table" and type(state.detail) == "string" and state.detail or ""
+end
+
 
 return core

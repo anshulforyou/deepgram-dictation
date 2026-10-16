@@ -15,3 +15,8 @@ type: catalog
 - role: writer
 - what: fit study of the Trailrunner 2 last with 40 runners.
 - source: acme/projects/sizing-study/CLAUDE.md
+
+## storefront
+- role: writer
+- what: the Acme online store, repository acme/storefront on GitHub.
+- source: acme/projects/storefront/CLAUDE.md
