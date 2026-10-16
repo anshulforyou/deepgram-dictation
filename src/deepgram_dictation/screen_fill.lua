@@ -205,24 +205,30 @@ end
 
 local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
--- Selects `original` (text read off the screen) in the focused text field, so a paste replaces it
--- instead of landing next to it. `done(true)` once it is selected; `done(false)` when the field
--- doesn't show its text or the text isn't in it, and nothing is selected then.
-function M.selectText(original, done)
+-- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read
+-- off the screen and is replacing) when it is in there, or else the box's whole text when `text`
+-- is a reworking of it (core.reworks), so the paste replaces it instead of landing next to it.
+-- `done(how)`: "span", "all", or nil when nothing was selected (an empty box, other text, or a
+-- box that doesn't show its text).
+function M.selectForPaste(original, text, done)
   local function try()
     local el = focused()
     local value = el and attr(el, "AXValue")
-    local span = core.findSpan(value, original)
-    if not span then return false end
+    if type(value) ~= "string" or value == "" then return nil, false end
+    local span, how = original and core.findSpan(value, original), "span"
+    if not span and core.reworks(value, text) then span, how = core.wholeRange(value), "all" end
+    if not span then return nil, true end
     local ok = pcall(function() el:setAttributeValue("AXSelectedTextRange", span) end)
     local now = ok and attr(el, "AXSelectedTextRange")
-    return type(now) == "table" and now.location == span.location and now.length == span.length
+    if type(now) == "table" and now.location == span.location and now.length == span.length then return how, true end
+    return nil, true
   end
-  if try() then return done(true) end
+  local how, sawText = try()
+  if how or sawText then return done(how) end
   local app = hs.application.frontmostApplication()
   local wait = app and exposePage(app) or 0
-  if wait == 0 then return done(false) end
-  hs.timer.doAfter(wait, function() done(try()) end)
+  if wait == 0 then return done(nil) end
+  hs.timer.doAfter(wait, function() done((try())) end)
 end
 
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before

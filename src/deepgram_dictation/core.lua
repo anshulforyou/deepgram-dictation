@@ -1432,6 +1432,31 @@ function core.taskReport(state, lastText)
 end
 
 
+-- Whether `text` (what grandma wrote) is a reworking of `value` (what is already in the box the
+-- user is typing in): most of the box's words of four letters or more are in it. Then her text
+-- replaces the box's instead of landing next to it.
+function core.reworks(value, text)
+  if type(value) ~= "string" or type(text) ~= "string" then return false end
+  local have = {}
+  for w in text:lower():gmatch("[%w']+") do have[w] = true end
+  local words, kept, seen = 0, 0, {}
+  for w in value:lower():gmatch("[%w']+") do
+    if #w >= 4 and not seen[w] then
+      seen[w] = true
+      words = words + 1
+      if have[w] then kept = kept + 1 end
+    end
+  end
+  return words >= 4 and kept / words >= 0.5
+end
+
+-- The whole of `value` as an Accessibility range.
+function core.wholeRange(value)
+  local n = 0
+  for _, cp in utf8.codes(value) do n = n + (cp > 0xFFFF and 2 or 1) end
+  return { location = 0, length = n }
+end
+
 -- Text grandma marked for skimming, "**key words**", as runs { { text, hi } } plus the text with
 -- the marks taken out (what gets copied). A "**" with no partner stays as it is.
 function core.highlightRuns(text)

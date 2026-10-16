@@ -815,6 +815,25 @@ describe("screen questions", function()
     end)
   end)
 
+  describe("reworks", function()
+    local notes = "we have a investor day on 21st nov dana. we need show reservation numbers there. "
+      .. "also we have change the subdomain to go.acme.run from club.acme.run"
+    it("knows her text is the box's notes written properly", function()
+      assert.is_true(core.reworks(notes, "Hi Dana,\n\nWe have an investor day on 21st Nov and need to show "
+        .. "reservation numbers there. We have also changed the subdomain from club.acme.run to go.acme.run."))
+    end)
+
+    it("leaves a box alone when her text is something else, or the box is near empty", function()
+      assert.is_false(core.reworks(notes, "Thanks Dana, Thursday works for me. Talk soon."))
+      assert.is_false(core.reworks("Best, Sam", "Best, Sam and a long reply"))
+      assert.is_false(core.reworks(nil, "x"))
+    end)
+
+    it("covers the whole box in UTF-16 units", function()
+      assert.are.same({ location = 0, length = 4 }, core.wholeRange("\u{1F600}ab"))
+    end)
+  end)
+
   describe("highlightRuns", function()
     it("splits marked words from the rest and gives the text without marks", function()
       local runs, plain = core.highlightRuns("I **can't find a link** here. Click **Reply**.")

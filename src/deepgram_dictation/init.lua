@@ -358,17 +358,18 @@ local function answerScreen(raw, recording, record, s)
         end,
       }, pictures)
     end
-    if answer and answer.kind == "insert" and answer.replaces then
-      -- A fix of text already on screen: select the original so the paste replaces it. When it
-      -- can't be found in the field, nothing is pasted; the fix is on the clipboard.
-      return screenFill.selectText(answer.replaces, function(selected)
-        record.screen.replaced = selected
-        if selected then
+    if answer and answer.kind == "insert" then
+      -- Text that reworks what is already in the box (a fix, or notes written up properly) replaces
+      -- it. A fix whose original can't be found is not pasted next to it: it waits on the clipboard.
+      return screenFill.selectForPaste(answer.replaces, answer.text, function(how)
+        record.screen.replaced = how or false
+        if how or not answer.replaces then
           pasteText(answer.text)
         else
           hs.pasteboard.setContents(answer.text)
-          overlay.showPanel(answer.text .. "\n\nI couldn't select the original text in this field, so nothing was"
-            .. " pasted. Select it and press Cmd+V.", "Fixed text copied")
+          overlay.showPanel({ gist = "Fixed text copied. Select the original, then Cmd+V.",
+            body = answer.text .. "\n\nI couldn't select the original text in this field, so nothing was pasted." },
+            "Copied")
         end
         saveScreen(recording, record)
       end)
