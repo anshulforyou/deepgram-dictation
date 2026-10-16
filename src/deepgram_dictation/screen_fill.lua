@@ -207,16 +207,18 @@ local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
 -- Selects `span` (an Accessibility range) in the focused box `el` holding `value`, with the keyboard:
 -- Brave ignores selection set through Accessibility (it says yes and nothing moves). The whole box
--- is Cmd+A; part of it is Cmd+Up to its start, then arrows. `done(true)` once Accessibility reads
--- back that selection, `done(false, got)` with what it read after a second of trying.
--- Cmd+A in a focused box selects only that box, so any selection from its start counts: Gmail's
--- compose box reads back a different length than its text (lines are blocks there), and an exact
--- check left his replies on the clipboard (2026-10-16).
+-- is Cmd+A; part of it is Cmd+Up to its start, then arrows. `done(true)` once the selection is
+-- that text, `done(false, got)` with the range it last read.
+-- Cmd+A in a focused box selects only that box, so any selection from its start counts. Gmail's
+-- compose box counts line breaks its own way (206 characters of text read back as 197 selected), so
+-- an exact range check left his replies on the clipboard (2026-10-16). Part of a box is checked by
+-- the selected text instead, whitespace aside, and widened when the arrows stopped short.
 local function selectSpan(el, value, span, done)
   local whole = core.wholeRange(value)
   local lead = #value:match("^%s*")
   local trail = #value:match("%s*$")
   local all = span.location <= lead and span.location + span.length >= whole.length - trail
+  local want = core.rangeText(value, span)
   if all then
     hs.eventtap.keyStroke({ "cmd" }, "a", 0)
   else
@@ -224,19 +226,34 @@ local function selectSpan(el, value, span, done)
     for _ = 1, span.location do hs.eventtap.keyStroke({}, "right", 0) end
     for _ = 1, span.length do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
   end
-  local tries = 0
+  -- The arrows are queued events: read only once the selection has stopped moving, or widening
+  -- would count presses still on their way (it overshot in Gmail).
+  local tries, last = 0, nil
   local function check()
     tries = tries + 1
     local now = attr(el, "AXSelectedTextRange")
-    local ok = type(now) == "table" and type(now.length) == "number" and (all
-      and now.location <= lead and now.length > 0
-      or now.location == span.location and now.length == span.length)
-    if ok or tries >= 5 then
-      return done(ok, type(now) == "table" and { location = now.location, length = now.length } or nil)
+    local seen = type(now) == "table" and type(now.length) == "number"
+    local moving = seen and (not last or last.location ~= now.location or last.length ~= now.length)
+    last = seen and now or nil
+    local ok, gap = false, nil
+    if seen and not moving then
+      if all then
+        ok = now.location <= lead and now.length > 0
+      else
+        gap = core.selectionGap(attr(el, "AXSelectedText"), want)
+        ok = gap == 0
+      end
     end
-    hs.timer.doAfter(0.2, check)
+    if ok or tries >= 20 or (seen and not moving and not (gap and gap < 0)) then
+      return done(ok, seen and { location = now.location, length = now.length } or nil)
+    end
+    if gap and gap < 0 then
+      for _ = 1, -gap do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
+      last = nil
+    end
+    hs.timer.doAfter(0.15, check)
   end
-  hs.timer.doAfter(0.2, check)
+  hs.timer.doAfter(0.15, check)
 end
 
 -- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read

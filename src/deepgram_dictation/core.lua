@@ -1460,6 +1460,27 @@ function core.message(value)
   return body, core.wholeRange(body)
 end
 
+-- The part of `value` an Accessibility range covers.
+function core.rangeText(value, range)
+  local out, at = {}, 0
+  for _, cp in utf8.codes(value) do
+    if at >= range.location and at < range.location + range.length then table.insert(out, utf8.char(cp)) end
+    at = at + (cp > 0xFFFF and 2 or 1)
+  end
+  return table.concat(out)
+end
+
+-- How far selected text `got` is from `want`, ignoring whitespace (browsers count line breaks their
+-- own way): 0 when it matches, a negative count of missing characters when `got` stops short of
+-- it, nil when it is something else.
+function core.selectionGap(got, want)
+  local function squeeze(t) return (tostring(t or ""):gsub("[%s\194\160]", "")) end
+  got, want = squeeze(got), squeeze(want)
+  if got == want then return 0 end
+  if want:sub(1, #got) == got then return -utf8.len(want:sub(#got + 1)) end
+  return nil
+end
+
 -- The whole of `value` as an Accessibility range.
 function core.wholeRange(value)
   local n = 0
