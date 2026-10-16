@@ -178,13 +178,21 @@ local function transition(from)
   end, settle)
 end
 
+-- A fresh window for the badge. One kept from earlier never shows over a full-screen app it
+-- wasn't made on: macOS keeps it off that Space, though it says it is showing (Fn often showed
+-- nothing over full-screen iTerm, 2026-10-16). So each appearance gets a new one.
+local function newCanvas()
+  if canvas then canvas:delete() end
+  canvas = hs.canvas.new({ x = 0, y = 0, w = WIDTH.listening, h = H })
+  canvas:level(hs.canvas.windowLevels.overlay)
+  canvas:behavior({ "canJoinAllSpaces", "stationary", "ignoresCycle", "fullScreenAuxiliary" })
+  canvas:clickActivating(false)
+end
+
 -- Makes the canvas and loads the GIFs, so the first show costs nothing.
 function M.setup()
   if canvas then return end
-  canvas = hs.canvas.new({ x = 0, y = 0, w = WIDTH.listening, h = H })
-  canvas:level(hs.canvas.windowLevels.overlay)
-  canvas:behavior({ "canJoinAllSpaces", "stationary", "ignoresCycle" })
-  canvas:clickActivating(false)
+  newCanvas()
   for name in pairs(WIDTH) do if name ~= "filling" then gif(MASCOT[name] or name) end end
   gif("needles")
 end
@@ -201,7 +209,11 @@ function M.show(newKind, n)
     if newKind == "filling" and step ~= was and not anim then settle() end
     return
   end
-  if not canvas:isShowing() then canvas:show() end
+  if not canvas:isShowing() then
+    stopAnim()
+    newCanvas()
+    canvas:show()
+  end
   transition(from)
 end
 
