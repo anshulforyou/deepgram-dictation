@@ -205,30 +205,58 @@ end
 
 local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
+-- Selects `span` (an Accessibility range) in the focused box `el` holding `value`, with the keyboard:
+-- Brave ignores selection set through Accessibility (it says yes and nothing moves). The whole box
+-- is Cmd+A; part of it is Cmd+Up to its start, then arrows. `done(true)` once Accessibility reads
+-- back exactly that selection.
+local function selectSpan(el, value, span, done)
+  local whole = core.wholeRange(value)
+  local lead = #value:match("^%s*")
+  local trail = #value:match("%s*$")
+  if span.location <= lead and span.location + span.length >= whole.length - trail then
+    span = whole
+    hs.eventtap.keyStroke({ "cmd" }, "a", 0)
+  else
+    hs.eventtap.keyStroke({ "cmd" }, "up", 0)
+    for _ = 1, span.location do hs.eventtap.keyStroke({}, "right", 0) end
+    for _ = 1, span.length do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
+  end
+  hs.timer.doAfter(0.2, function()
+    local now = attr(el, "AXSelectedTextRange")
+    done(type(now) == "table" and now.location == span.location and now.length == span.length)
+  end)
+end
+
 -- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read
 -- off the screen and is replacing) when it is in there, or else the box's whole text when `text`
 -- is a reworking of it (core.reworks), so the paste replaces it instead of landing next to it.
--- `done(how)`: "span", "all", or nil when nothing was selected (an empty box, other text, or a
--- box that doesn't show its text).
+-- `done(how)`: "span", "all", or nil when nothing was selected (an empty box, other text, a box
+-- that doesn't show its text, or a selection that didn't land).
 function M.selectForPaste(original, text, done)
-  local function try()
+  -- nil when the box shows no text yet (maybe not exposed), else el, value, span or nil, how
+  local function look()
     local el = focused()
     local value = el and attr(el, "AXValue")
-    if type(value) ~= "string" or value == "" then return nil, false end
-    local span, how = original and core.findSpan(value, original), "span"
-    if not span and core.reworks(value, text) then span, how = core.wholeRange(value), "all" end
-    if not span then return nil, true end
-    local ok = pcall(function() el:setAttributeValue("AXSelectedTextRange", span) end)
-    local now = ok and attr(el, "AXSelectedTextRange")
-    if type(now) == "table" and now.location == span.location and now.length == span.length then return how, true end
-    return nil, true
+    if type(value) ~= "string" or value == "" then return nil end
+    local span = original and core.findSpan(value, original)
+    if span then return el, value, span, "span" end
+    if core.reworks(value, text) then return el, value, core.wholeRange(value), "all" end
+    return el, value
   end
-  local how, sawText = try()
-  if how or sawText then return done(how) end
+  local function go(el, value, span, how)
+    if not span then return done(nil) end
+    selectSpan(el, value, span, function(ok) done(ok and how or nil) end)
+  end
+  local el, value, span, how = look()
+  if el then return go(el, value, span, how) end
   local app = hs.application.frontmostApplication()
   local wait = app and exposePage(app) or 0
   if wait == 0 then return done(nil) end
-  hs.timer.doAfter(wait, function() done((try())) end)
+  hs.timer.doAfter(wait, function()
+    local e, v, sp, h = look()
+    if not e then return done(nil) end
+    go(e, v, sp, h)
+  end)
 end
 
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before
