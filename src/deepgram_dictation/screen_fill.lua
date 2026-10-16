@@ -208,23 +208,35 @@ local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 -- Selects `span` (an Accessibility range) in the focused box `el` holding `value`, with the keyboard:
 -- Brave ignores selection set through Accessibility (it says yes and nothing moves). The whole box
 -- is Cmd+A; part of it is Cmd+Up to its start, then arrows. `done(true)` once Accessibility reads
--- back exactly that selection.
+-- back that selection, `done(false, got)` with what it read after a second of trying.
+-- Cmd+A in a focused box selects only that box, so any selection from its start counts: Gmail's
+-- compose box reads back a different length than its text (lines are blocks there), and an exact
+-- check left his replies on the clipboard (2026-10-16).
 local function selectSpan(el, value, span, done)
   local whole = core.wholeRange(value)
   local lead = #value:match("^%s*")
   local trail = #value:match("%s*$")
-  if span.location <= lead and span.location + span.length >= whole.length - trail then
-    span = whole
+  local all = span.location <= lead and span.location + span.length >= whole.length - trail
+  if all then
     hs.eventtap.keyStroke({ "cmd" }, "a", 0)
   else
     hs.eventtap.keyStroke({ "cmd" }, "up", 0)
     for _ = 1, span.location do hs.eventtap.keyStroke({}, "right", 0) end
     for _ = 1, span.length do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
   end
-  hs.timer.doAfter(0.2, function()
+  local tries = 0
+  local function check()
+    tries = tries + 1
     local now = attr(el, "AXSelectedTextRange")
-    done(type(now) == "table" and now.location == span.location and now.length == span.length)
-  end)
+    local ok = type(now) == "table" and type(now.length) == "number" and (all
+      and now.location <= lead and now.length > 0
+      or now.location == span.location and now.length == span.length)
+    if ok or tries >= 5 then
+      return done(ok, type(now) == "table" and { location = now.location, length = now.length } or nil)
+    end
+    hs.timer.doAfter(0.2, check)
+  end
+  hs.timer.doAfter(0.2, check)
 end
 
 -- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read
@@ -233,7 +245,8 @@ end
 -- `done(how, info)`: how is "span", "all", or nil when nothing was selected; info says what was
 -- found ({ role, chars, why }) so a miss can be read from the dictation record.
 local EXPOSE_POLL, EXPOSE_LIMIT = 0.3, 3
-local polling = {} -- timers waiting on a page to show its fields, kept so they aren't collected
+-- Timers waiting on a page to show its fields, kept so they aren't collected.
+local polling = {} -- luacheck: ignore 241
 function M.selectForPaste(original, text, done)
   local info = {}
   -- The box when it shows text: el, value, span or nil, how.
@@ -251,7 +264,8 @@ function M.selectForPaste(original, text, done)
   end
   local function go(el, value, span, how)
     if not span then return done(nil, info) end
-    selectSpan(el, value, span, function(ok)
+    selectSpan(el, value, span, function(ok, got)
+      info.wanted, info.got = how, got
       if not ok then info.why = "the selection didn't land" end
       done(ok and how or nil, info)
     end)
