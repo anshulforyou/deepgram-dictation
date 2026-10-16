@@ -16,6 +16,8 @@ local screenFill = require("deepgram_dictation.screen_fill")
 local voice = require("deepgram_dictation.voice")
 local badge = require("deepgram_dictation.badge")
 local sounds = require("deepgram_dictation.sounds")
+local tasks = require("deepgram_dictation.tasks")
+local screenMemory = require("deepgram_dictation.screen_memory")
 
 local M = { core = core, meeting = meeting }
 
@@ -142,7 +144,7 @@ local function planText(answer)
   return table.concat(lines, "\n")
 end
 
--- The user said yes to a fill plan: grandma fills the form on the screen she looked at.
+-- Grandma fills the form on the screen she looked at, once the user said yes or told her to.
 local function fillForm(answer, s, recording, record)
   local scr = s.shot.screen
   overlay.showGlow(scr)
@@ -157,6 +159,11 @@ local function fillForm(answer, s, recording, record)
     local sound = ({ done = "done", error = "error" })[info.status] -- a stopped fill stays quiet
     if sound then sounds.play(sound) end
     if info.status == "done" then
+      local skipped = {}
+      for _, f in ipairs(answer.fields) do if f.skip then table.insert(skipped, f.label) end end
+      if #skipped > 0 then
+        summary = summary .. "\n\nLeft empty, not in your memory: " .. table.concat(skipped, "; ")
+      end
       overlay.showPanel(summary, "Filled. Check it, then save")
     else
       overlay.showPanel((info.status == "stopped" and "Stopped: " or "Couldn't fill it: ") .. tostring(info.reason)
@@ -165,6 +172,112 @@ local function fillForm(answer, s, recording, record)
     record.screen.fill = { status = info.status, reason = info.reason, ms = info.ms, actions = info.actions,
                            summary = summary }
     saveScreen(recording, record)
+  end)
+end
+
+-- The memory a screen question was answered with (sent or opened), read again whole for a page
+-- grandma works on: done({ blocks = { { name, text } }, images }).
+local WORK_MEMORY_CHARS = 240000
+local function workMemory(info, done)
+  local names, seen = {}, {}
+  for _, list in ipairs({ info.memory or {}, info.opened or {} }) do
+    for _, n in ipairs(list) do
+      if not seen[n] then seen[n] = true table.insert(names, n) end
+    end
+  end
+  local out = { blocks = {}, images = {} }
+  local function nextName(i)
+    local name = names[i]
+    if not name then return done(out) end
+    screenMemory.open(name, WORK_MEMORY_CHARS / #names, function(block)
+      if block then
+        table.insert(out.blocks, { name = block.name, text = block.text })
+        for _, img in ipairs(block.images or {}) do table.insert(out.images, img) end
+      end
+      nextName(i + 1)
+    end)
+  end
+  nextName(1)
+end
+
+-- Grandma works on the page on screen: she looks through it, proposes every change, and makes them
+-- once the user says yes, or straight away when they told her outright to make them.
+local function workOnPage(answer, s, recording, record, info)
+  local scr = s.shot.screen
+  local function ended(summary, result, title)
+    overlay.hideGlow()
+    if not recorder then setIndicator(nil) end
+    local sound = ({ done = "done", error = "error" })[result.status]
+    if sound then sounds.play(sound) end
+    if result.status == "done" then
+      overlay.showPanel(summary or "Done.", title)
+    else
+      overlay.showPanel((result.status == "stopped" and "Stopped: " or "Couldn't do it: ") .. tostring(result.reason)
+        .. ". Anything already changed is still there.", result.status == "stopped" and "Stopped" or "Couldn't do it",
+        true)
+    end
+  end
+  local function make(fields)
+    overlay.showGlow(scr)
+    setIndicator("filling", 0)
+    sounds.play("fill")
+    screenFill.run(fields, scr, function(n)
+      if not recorder then setIndicator("filling", n) end
+    end, function(summary, result)
+      ended(summary, result, "Done. Check it, then publish")
+      record.screen.work = { status = result.status, reason = result.reason, ms = result.ms,
+                             actions = result.actions, summary = summary }
+      saveScreen(recording, record)
+    end, { mode = "work", goal = answer.text })
+  end
+  setIndicator("looking")
+  workMemory(info, function(mem)
+    if recorder then return end -- a new dictation started meanwhile
+    overlay.showGlow(scr)
+    setIndicator("looking")
+    screenFill.run({}, scr, function()
+      if not recorder then setIndicator("looking") end
+    end, function(proposal, result)
+      record.screen.survey = { status = result.status, reason = result.reason, ms = result.ms,
+                               actions = result.actions }
+      if result.status ~= "proposed" then
+        ended(type(proposal) == "string" and proposal or nil, result, "Looked through it")
+        return saveScreen(recording, record)
+      end
+      overlay.hideGlow()
+      if not recorder then setIndicator(nil) end
+      local fields, summary = core.parseProposal(proposal, mem.images)
+      record.screen.proposal = { summary = summary, fields = fields }
+      local changes = 0
+      for _, f in ipairs(fields) do if not f.skip then changes = changes + 1 end end
+      if changes == 0 then
+        sounds.play("answer")
+        overlay.showPanel(summary ~= "" and summary or "She found nothing to change.", "Nothing to change")
+        return saveScreen(recording, record)
+      end
+      if answer.asked then
+        -- They told her to make the changes: she does, without a card in between.
+        record.screen.confirmed = "asked"
+        return make(fields)
+      end
+      sounds.play("answer")
+      local pictures = {}
+      for _, f in ipairs(fields) do
+        if f.file and not f.skip then table.insert(pictures, { path = f.file.path, caption = f.label }) end
+      end
+      overlay.showPanel(core.proposalText(fields, summary), "Make these changes?", false, {
+        onReturn = function()
+          record.screen.closedBy = "return"
+          record.screen.confirmed = true
+          make(fields)
+        end,
+        onEscape = function(how)
+          record.screen.closedBy = how
+          record.screen.confirmed = false
+          saveScreen(recording, record)
+        end,
+      }, pictures)
+    end, { mode = "survey", goal = answer.text, memory = mem })
   end)
 end
 
@@ -178,23 +291,84 @@ local function answerScreen(raw, recording, record, s)
     record.screen = { status = info.status, ms = info.ms, reason = info.reason, captureMs = s.shot and s.shot.ms,
                       kind = answer and answer.kind, answer = answer and answer.text,
                       fields = answer and answer.fields, memory = info.memory, opened = info.opened }
+    if answer and answer.kind == "work" then return workOnPage(answer, s, recording, record, info) end
+    if answer and answer.kind == "task" and tasks.enabled() then
+      record.screen.task = answer.task
+      local function begin()
+        tasks.start(answer.task, raw, function(err)
+          record.screen.started = err == nil
+          if err then
+            sounds.play("error")
+            hs.pasteboard.setContents(raw)
+            overlay.showPanel("Couldn't start it: " .. err .. "\n\nYour question is on the clipboard.",
+              "Couldn't start", true)
+          else
+            sounds.play("fill")
+            overlay.showPanel(answer.task.goal .. "\n\nShe'll tell you when it's done, or if she needs you.",
+              "On it, in the background")
+          end
+          saveScreen(recording, record)
+        end)
+      end
+      if not core.taskNeedsConfirm(answer.task) then return begin() end
+      sounds.play("answer")
+      return overlay.showPanel(core.taskPlanText(answer.task), "Start this task?", false, {
+        onReturn = function()
+          record.screen.closedBy = "return"
+          record.screen.confirmed = true
+          begin()
+        end,
+        onEscape = function(how)
+          record.screen.closedBy = how
+          record.screen.confirmed = false
+          saveScreen(recording, record)
+        end,
+      })
+    end
+    if answer and answer.kind == "task" then
+      -- Background tasks are off: say what she would have done instead.
+      answer = { kind = "answer", text = (answer.text ~= "" and answer.text or answer.task.goal)
+        .. "\n\n(Background tasks are off: backgroundTasks = false.)" }
+    end
+    if answer and answer.kind == "fill" and answer.asked then
+      -- They told her to fill it: she does, and shows what she filled when she's done.
+      record.screen.confirmed = "asked"
+      return fillForm(answer, s, recording, record)
+    end
     sounds.play(not answer and "error" or answer.kind == "insert" and "insert" or "answer")
     if answer and answer.kind == "fill" then
-      -- Nothing is touched until the user has seen the plan and said yes.
+      -- Not asked outright: nothing is touched until the user has seen the plan and said yes.
       local pictures = {}
       for _, f in ipairs(answer.fields) do
         if f.file and not f.skip then table.insert(pictures, { path = f.file.path, caption = f.label }) end
       end
       return overlay.showPanel(planText(answer), "Fill this form?", false, {
         onReturn = function()
+          record.screen.closedBy = "return"
           record.screen.confirmed = true
           fillForm(answer, s, recording, record)
         end,
-        onEscape = function()
+        onEscape = function(how)
+          record.screen.closedBy = how
           record.screen.confirmed = false
           saveScreen(recording, record)
         end,
       }, pictures)
+    end
+    if answer and answer.kind == "insert" and answer.replaces then
+      -- A fix of text already on screen: select the original so the paste replaces it. When it
+      -- can't be found in the field, nothing is pasted; the fix is on the clipboard.
+      return screenFill.selectText(answer.replaces, function(selected)
+        record.screen.replaced = selected
+        if selected then
+          pasteText(answer.text)
+        else
+          hs.pasteboard.setContents(answer.text)
+          overlay.showPanel(answer.text .. "\n\nI couldn't select the original text in this field, so nothing was"
+            .. " pasted. Select it and press Cmd+V.", "Fixed text copied")
+        end
+        saveScreen(recording, record)
+      end)
     end
     if answer and answer.kind == "insert" then
       pasteText(answer.text)
@@ -252,6 +426,24 @@ local function deliver(raw, dict, via, moved, s)
       hs.alert.show("Your question is on the clipboard. Ask again with Fn+Control to send the screen.", 3)
     end
     return history.save(recording, record)
+  end
+  if s and s.reply then
+    record.via = via .. "+task"
+    clearBadge(s)
+    if raw == "" then return history.save(recording, record) end
+    return tasks.reply(s.reply, raw, function(err)
+      record.task = { reply = s.reply, status = err and "error" or "ok", reason = err }
+      if err then
+        sounds.play("error")
+        hs.pasteboard.setContents(raw)
+        overlay.showPanel("Couldn't send that: " .. err .. "\n\nWhat you said is on the clipboard.",
+          "Couldn't reply", true)
+      else
+        sounds.play("fill")
+        overlay.showPanel(raw, "Sent. She's back on it")
+      end
+      history.save(recording, record)
+    end)
   end
   if s and s.asked then
     record.via = via .. "+screen"
@@ -455,10 +647,12 @@ end
 
 local function startRecording()
   screenFill.stop("you started a dictation")
+  -- A task's panel open as this starts: Fn+Control now replies to her (closing it forgets that).
+  local replyTo = tasks.awaiting()
   overlay.closePanel(0) -- at once: with Control already down, the screen is captured next
   os.remove(audioPath)
   cancelled, sendOnExit, micReadyAt, usedStandby, holding = false, false, nil, nil, true
-  session = {}
+  session = { replyTo = replyTo }
   local s = session
   startedAt = hs.timer.secondsSinceEpoch()
   if cfg.streaming and hs.fs.attributes(recorderHelper()) then return startStreaming() end
@@ -518,6 +712,12 @@ end
 -- grandma has seen the screen.
 local function askScreen(s)
   s.asked = true
+  if s.replyTo then
+    -- A reply to a background task: what is said goes to her, the screen isn't needed.
+    s.reply = s.replyTo
+    sounds.play("ask")
+    return
+  end
   if not screen.permitted() then
     screen.permitted(true) -- macOS shows its permission prompt (once)
     s.error = "Grandma can't see the screen yet. Allow Hammerspoon in System Settings → Privacy & Security"
@@ -596,6 +796,9 @@ local function buildMenu()
     end })
     table.insert(items, { title = "-" })
   end
+  local taskItems = tasks.menuItems()
+  for _, item in ipairs(taskItems) do table.insert(items, item) end
+  if #taskItems > 0 then table.insert(items, { title = "-" }) end
   for _, item in ipairs(meeting.menuItems()) do table.insert(items, item) end
   table.insert(items, { title = "-" })
   table.insert(items, { title = "Reload Hammerspoon config", fn = hs.reload })
@@ -649,6 +852,7 @@ function M.start(overrides)
   screen.setup(cfg)
   screenFill.setup(cfg)
   voice.setup(cfg)
+  tasks.setup(cfg)
   badge.setup()
   sounds.setup(cfg, function() return core.inCall(meeting.online(), detector.callers()) end)
   meeting.setup(cfg, dictPath, updateMenubar)
@@ -675,6 +879,7 @@ function M.stop()
   overlay.teardown()
   screen.teardown()
   voice.teardown()
+  tasks.teardown()
   if recorder then sendOnExit = false recorder:terminate() recorder = nil end
   if menubar then menubar:delete() menubar = nil end
   setIndicator(nil)

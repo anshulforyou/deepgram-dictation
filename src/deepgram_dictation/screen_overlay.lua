@@ -6,6 +6,8 @@ local core = require("deepgram_dictation.core")
 
 local M = {}
 
+local function log(fmt, ...) print("[deepgram-dictation] " .. string.format(fmt, ...)) end
+
 local function rgb(hex, alpha)
   return { red = tonumber(hex:sub(1, 2), 16) / 255, green = tonumber(hex:sub(3, 4), 16) / 255,
            blue = tonumber(hex:sub(5, 6), 16) / 255, alpha = alpha or 1 }
@@ -119,13 +121,14 @@ function M.closePanel(fade)
   -- A question closed any other way (the next dictation starting) counts as Esc.
   local cancel = pendingCancel
   pendingCancel = nil
+  if cancel then log("card closed: replaced") end
   if panel then
     local c = panel
     panel = nil
     c:hide(fade or 0.15)
     hs.timer.doAfter(0.3, function() c:delete() end)
   end
-  if cancel then cancel() end
+  if cancel then cancel("replaced") end
 end
 
 -- Shows `text` next to the mouse, on whichever display it is on now. `note` is the small line in
@@ -173,24 +176,27 @@ function M.showPanel(text, note, isError, keys, pictures)
   c:level(hs.canvas.windowLevels.floating)
   c:behavior({ "canJoinAllSpaces" })
   pendingCancel = keys and keys.onEscape
-  local function answer(fn)
+  -- `how` (return, esc, click; "replaced" when a new press closed it) goes to the callback and
+  -- the console, so a card nobody answered can be told apart from one the user cancelled.
+  local function answer(fn, how)
     pendingCancel = nil
     M.closePanel(0)
-    if fn then fn() end
+    if keys then log("card closed: %s", how) end
+    if fn then fn(how) end
   end
   c:mouseCallback(function(_, message)
-    if message == "mouseUp" then answer(keys and keys.onEscape) end
+    if message == "mouseUp" then answer(keys and keys.onEscape, "click") end
   end)
   c:show(0.15)
   panel = c
   panelKeys = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
     local code = e:getKeyCode()
     if code == hs.keycodes.map.escape then
-      answer(keys and keys.onEscape)
+      answer(keys and keys.onEscape, "esc")
       return keys ~= nil
     end
     if keys and (code == hs.keycodes.map["return"] or code == hs.keycodes.map.padenter) then
-      answer(keys.onReturn)
+      answer(keys.onReturn, "return")
       return true
     end
     return false

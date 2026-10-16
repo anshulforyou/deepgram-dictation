@@ -277,6 +277,20 @@ or drop with `grandma review`, the same as grandma's own session proposals.
 
 Plain dictation (Fn alone) is never read for facts: it's you writing to other people.
 
+**Grandma works on a page for you.** Ask her to change content inside the app on screen, more than filling empty fields: "rewrite this landing page for the Nowhere suit and put the product photos in". It goes in two steps on the same engine as filling:
+
+1. She looks through the page with screenshots and scrolling only, clicking and typing nothing, and proposes every change: the new text for each block, written from your memory, and which memory image goes where. You check the list. Return goes ahead, Esc cancels.
+2. She makes the changes. Unlike filling, she may click buttons, links, tabs and menus to select blocks and open panels, and she may save a draft (Save, Save draft, Cmd+S). She can only type the text you confirmed. She never clicks anything that reads like Publish, Update, Deploy, Send, Share, Invite, Pay, Buy, Delete, Remove or Archive, and that is checked through Accessibility before every click. Return only goes into a multi-line text box. Any mouse or keyboard input from you, or another app coming to the front, stops her. She's capped at 300 actions and 20 minutes.
+
+Some editors draw their interface on a canvas that Accessibility can't see into. There a button's name can't be checked, so only her instructions keep her off Publish, and the Hammerspoon console logs each such click. When a change depends on a company or project and it isn't clear which, she asks which sweater or project you mean instead of guessing. `make test-work` runs it on a test landing page in Brave (it takes over the mouse and keyboard for a minute or two).
+
+**Grandma takes on tasks in the background.** Ask for work that needs more than the screen, such as "review this PR", "find out why this test fails", or "look into this company before my call". Grandma starts a [Claude Code](https://claude.com/claude-code) background session (`claude --bg`, through your Claude Code login) and you carry on working. When she's done, or needs something only you can answer, you get a notification and a sound. Click it to see what she said. While that panel is open, hold Fn+Control to reply, and she carries on in the same session. Return opens the session in Terminal (`claude attach`). The 🎙 menu lists recent tasks, with Stop.
+
+- **Her memory.** The session runs in the folder of the project the task belongs to, when your grandma catalog points at one, otherwise in a folder under `taskWorkspace`. It gets your `global/` memory, the catalog, and the sweater or project the task was matched to. It can read the rest of your grandma home and your project folders when the task needs more, and asks which sweater or project you mean when it can't tell. Memory is never written by a task. `secrets/`, `.env` files and anything named like a key or credential are denied to every read.
+- **What she can do.** It runs in Claude Code's restricted mode, with an allowlist. She can read and search files, use git and gh to look (diffs, logs, PRs, issues, checks), and search and read the web. Pushing, `git remote`, opening, commenting on, reviewing or merging PRs and issues, `gh api`, curl and ssh are denied. You do every outward action yourself, and she ends with what to run or post when the task needs one.
+- **Minor tasks start at once, big ones ask first.** A read-only task with something on screen to work from starts straight away. A task that may change code, has no clear target, or looks like more than 10 minutes shows its plan first (Return starts it). Code makes this decision, not the model, and only a confirmed task gets the edit tools. She then works in her own git worktree on a new branch (`claude -w`), commits there with no attribution lines, runs the tests, and never pushes. Your checkout is untouched. Build and test commands run the project's own code, so for a task that edits, the denied commands guard against mistakes. They are not a sandbox.
+- **Limits.** At most `maxTasks` (3) run at once, and one still working after `taskMinutes` (45) is stopped. Claude Code has to trust the folder a task runs in. Your project folders usually are already trusted. If the workspace isn't, she tells you to run `claude` there once.
+
 **Testing it.** [`tests/screens/`](tests/screens/) has made-up screens (an inbox, an analytics
 dashboard, account settings, a calendar, a sign-up form with errors, a team chat, and a phishing
 email that tries to give the assistant orders, and a store admin with an empty product form)
@@ -452,6 +466,11 @@ deepgramDictation.start({
 | `sounds` | `true` | Soft sounds for grandma's moments, never while a call could hear them |
 | `soundVolume` | `0.5` | 0 to 1, on top of the system volume |
 | `dictationSounds` | `false` | Also a faint tick when a plain dictation starts and is pasted |
+| `backgroundTasks` | `true` | With `screenAssist`: "review this PR" and the like start a Claude Code background session |
+| `taskWorkspace` | `"~/Documents/grandma-tasks"` | Where a task with no project folder runs |
+| `taskModel` | `nil` | Claude model for background tasks; `nil` uses the CLI's default |
+| `taskMinutes` | `45` | A task still working after this many minutes is stopped |
+| `maxTasks` | `3` | Background tasks running at once |
 | `soundsOff` | `nil` | Sounds to leave out, e.g. `{ think = true }` (names in `src/deepgram_dictation/sounds/`) |
 | `anthropicKeychainName` | `"anthropic-api-key"` | Keychain service name holding the Anthropic API key |
 | `keytermNames` | `50` | How many names from grandma memory Deepgram listens for |
@@ -563,7 +582,9 @@ Anthropic's API, only when you hold Fn+Control. With `grandmaHome` it also sends
 your sweater catalog, and the memory of any sweater or project the question involves (see
 [Asking grandma about the screen](#asking-grandma-about-the-screen)), and the profile is
 generated by sending your `global/` memory files. Screenshots are deleted as soon as they're sent
-and are never saved. `keepDictations`
+and are never saved. A background task runs as a Claude Code session through your Claude Code
+login: what it reads (your files, memory, pages) goes to Anthropic as any Claude Code session's
+would, and the session is kept by Claude Code like your other ones. `keepDictations`
 keeps recent dictation audio and text in `~/Library/Application Support/deepgram-dictation/`.
 See [Deepgram's data privacy terms](https://deepgram.com/privacy) for how they handle audio.
 

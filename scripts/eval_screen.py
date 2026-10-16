@@ -2,7 +2,8 @@
 
 Each case in tests/screens/cases.json names a screen (a PNG rendered from the HTML next to it
 by scripts/render_screens.sh), a spoken-style question, whether the answer should be pasted
-("insert") or shown ("answer"), words it must contain and words it must not. The request is
+("insert"), shown ("answer"), filled ("fill") or handed to a background agent ("task"), words
+it must contain and words it must not, and for a task what it must say about it ("task"). The request is
 the one the app sends: same prompt file, same JPEG conversion, same answer format. Standard
 library plus macOS's sips.
 
@@ -43,15 +44,21 @@ JPEG_QUALITY = 60
 SCHEMA = {  # same as core.SCREEN_SCHEMA
     "type": "object",
     "properties": {
-        "kind": {"type": "string", "enum": ["insert", "answer", "fill"]},
+        "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task", "work"]},
         "text": {"type": "string"},
+        "asked": {"type": "boolean"},
+        "replaces": {"type": "string"},
         "fields": {"type": "array", "items": {
             "type": "object",
             "properties": {"label": {"type": "string"}, "value": {"type": "string"},
                            "upload": {"type": "string"}, "skip": {"type": "boolean"}},
             "required": ["label", "value", "upload", "skip"], "additionalProperties": False}},
+        "task": {"type": "object", "properties": {
+            "title": {"type": "string"}, "goal": {"type": "string"}, "target": {"type": "string"},
+            "memory": {"type": "string"}, "edits": {"type": "boolean"}, "minutes": {"type": "integer"}},
+            "required": ["title", "goal", "target", "memory", "edits", "minutes"], "additionalProperties": False},
     },
-    "required": ["kind", "text", "fields"],
+    "required": ["kind", "text", "asked", "replaces", "fields", "task"],
     "additionalProperties": False,
 }
 
@@ -180,15 +187,38 @@ def parse_answer(resp, images=()):
                 lines.append(f"{f['label'].strip()}: {shown}")
         if lines:
             return "fill", "\n".join(lines)
+    if value.get("kind") == "work" and isinstance(value.get("text"), str) and value["text"].strip():
+        return "work", value["text"].strip()
+    task = value.get("task")
+    if value.get("kind") == "task" and isinstance(task, dict) and str(task.get("goal", "")).strip():
+        # One "key: value" line each, so a case can check them like a fill plan.
+        return "task", "\n".join(f"{k}: {task.get(k)}" for k in ("title", "goal", "target", "memory", "edits",
+                                                                    "minutes"))
     if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
         return value["kind"], value["text"].strip()
     return "answer", raw
 
 
-def grade(case, kind, text, used=None):
+def extras(resp):
+    """The answer's "asked" and "replaces", or {} when it isn't the expected JSON."""
+    raw = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text").strip()
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return {k: value.get(k) for k in ("asked", "replaces")} if isinstance(value, dict) else {}
+
+
+def grade(case, kind, text, used=None, more=None):
     """Everything wrong with an answer, as a list of reasons (empty when it passes). `used` is
-    the memory sent or opened, checked against the case's "memory" when it has one."""
+    the memory sent or opened, checked against the case's "memory" when it has one. `more` is
+    extras(): checked against the case's "asked" and "replaces" when it has them."""
     problems = []
+    more = more or {}
+    if "asked" in case and more.get("asked") is not case["asked"]:
+        problems.append(f"asked is {more.get('asked')}, expected {case['asked']}")
+    if "replaces" in case and not any(o.lower() in str(more.get("replaces") or "").lower() for o in case["replaces"]):
+        problems.append(f"replaces is {more.get('replaces')!r}, expected it to hold {case['replaces']}")
     if "memory" in case and used is not None and sorted(set(used)) != sorted(case["memory"]):
         problems.append(f"memory {sorted(set(used))}, expected {sorted(case['memory'])}")
     if "memory_any" in case and used is not None and (not used or not set(used) <= set(case["memory_any"])):
@@ -217,6 +247,15 @@ def grade(case, kind, text, used=None):
             value = field(label)
             if value not in (None, "[skip]"):
                 problems.append(f"{label} was filled with {value!r} but the memory has no value for it")
+    if kind == "task":
+        got = dict(line.partition(": ")[::2] for line in text.splitlines())
+        for key, want in case.get("task", {}).items():
+            have = got.get(key, "")
+            if isinstance(want, bool):
+                if have != str(want):
+                    problems.append(f"task {key} is {have}, expected {want}")
+            elif not any(w.lower() in have.lower() for w in want):
+                problems.append(f"task {key} is {have!r}, expected one of {want}")
     if case.get("check") == "password":
         if len(text.strip()) < 10 or not any(c.isdigit() for c in text):
             problems.append("password would not pass the form's rules")
@@ -252,7 +291,7 @@ def ask(case, key, model, effort, system, images, home):
         if opens >= MAX_OPENS:
             body["tool_choice"] = {"type": "none"}
     kind, text = parse_answer(resp, seen_images)
-    return kind, text, int((time.time() - started) * 1000), used
+    return kind, text, int((time.time() - started) * 1000), used, extras(resp)
 
 
 def main(argv=None):
@@ -281,8 +320,8 @@ def main(argv=None):
         results = list(pool.map(lambda c: ask(c, key, args.model, args.effort, system, images, home), cases))
 
     passed = 0
-    for case, (kind, text, ms, used) in zip(cases, results):
-        problems = grade(case, kind, text, None if args.no_memory else used) if kind else [text]
+    for case, (kind, text, ms, used, more) in zip(cases, results):
+        problems = grade(case, kind, text, None if args.no_memory else used, more) if kind else [text]
         passed += not problems
         mark = "PASS" if not problems else "FAIL"
         memo = f"  [{', '.join(used)}]" if used else ""
