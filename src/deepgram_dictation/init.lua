@@ -361,8 +361,9 @@ local function answerScreen(raw, recording, record, s)
     if answer and answer.kind == "insert" then
       -- Text that reworks what is already in the box (a fix, or notes written up properly) replaces
       -- it. A fix whose original can't be found is not pasted next to it: it waits on the clipboard.
-      return screenFill.selectForPaste(answer.replaces, answer.text, function(how)
+      return screenFill.selectForPaste(answer.replaces, answer.text, function(how, found)
         record.screen.replaced = how or false
+        record.screen.box = found
         if how or not answer.replaces then
           pasteText(answer.text)
         else

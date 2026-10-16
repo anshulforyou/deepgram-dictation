@@ -230,33 +230,51 @@ end
 -- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read
 -- off the screen and is replacing) when it is in there, or else the box's whole text when `text`
 -- is a reworking of it (core.reworks), so the paste replaces it instead of landing next to it.
--- `done(how)`: "span", "all", or nil when nothing was selected (an empty box, other text, a box
--- that doesn't show its text, or a selection that didn't land).
+-- `done(how, info)`: how is "span", "all", or nil when nothing was selected; info says what was
+-- found ({ role, chars, why }) so a miss can be read from the dictation record.
+local EXPOSE_POLL, EXPOSE_LIMIT = 0.3, 3
+local polling = {} -- timers waiting on a page to show its fields, kept so they aren't collected
 function M.selectForPaste(original, text, done)
-  -- nil when the box shows no text yet (maybe not exposed), else el, value, span or nil, how
+  local info = {}
+  -- The box when it shows text: el, value, span or nil, how.
   local function look()
     local el = focused()
     local value = el and attr(el, "AXValue")
-    if type(value) ~= "string" or value == "" then return nil end
+    info.role = el and attr(el, "AXRole") or "none"
+    info.chars = type(value) == "string" and #value or 0
+    if type(value) ~= "string" or value == "" then info.why = "no text in the focused element" return nil end
     local span = original and core.findSpan(value, original)
     if span then return el, value, span, "span" end
     if core.reworks(value, text) then return el, value, core.wholeRange(value), "all" end
+    info.why = original and "original not found in the box" or "her text doesn't rework the box's text"
     return el, value
   end
   local function go(el, value, span, how)
-    if not span then return done(nil) end
-    selectSpan(el, value, span, function(ok) done(ok and how or nil) end)
+    if not span then return done(nil, info) end
+    selectSpan(el, value, span, function(ok)
+      if not ok then info.why = "the selection didn't land" end
+      done(ok and how or nil, info)
+    end)
   end
   local el, value, span, how = look()
   if el then return go(el, value, span, how) end
+  if info.role == "AXTextArea" or info.role == "AXTextField" then return done(nil, info) end -- an empty box
+  -- Maybe the page isn't shown to Accessibility yet: ask, then look again until it is.
   local app = hs.application.frontmostApplication()
-  local wait = app and exposePage(app) or 0
-  if wait == 0 then return done(nil) end
-  hs.timer.doAfter(wait, function()
+  if not app or exposePage(app) == 0 then return done(nil, info) end
+  local waited = 0
+  local timer
+  timer = hs.timer.doEvery(EXPOSE_POLL, function()
+    waited = waited + EXPOSE_POLL
     local e, v, sp, h = look()
-    if not e then return done(nil) end
-    go(e, v, sp, h)
+    if e or waited >= EXPOSE_LIMIT or info.role == "AXTextArea" or info.role == "AXTextField" then
+      timer:stop()
+      polling[timer] = nil
+      if e then return go(e, v, sp, h) end
+      done(nil, info)
+    end
   end)
+  polling[timer] = true
 end
 
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before
