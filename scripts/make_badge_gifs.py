@@ -20,7 +20,7 @@ NO_INSET = {"needles"}  # drawn in the middle of the pill, not across its ends
 FPS = 20
 # Frame time (ms) for animations that should move slower than FPS: the listening strand at 20 fps
 # read as hurried while dictating (2026-10-15).
-FRAME_MS = {"listening": 80}
+FRAME_MS = {"listening": 120}
 
 
 def main(frames_dir, out_dir):
