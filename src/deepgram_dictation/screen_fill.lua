@@ -258,7 +258,9 @@ function M.selectForPaste(original, text, done)
     if type(value) ~= "string" or value == "" then info.why = "no text in the focused element" return nil end
     local span = original and core.findSpan(value, original)
     if span then return el, value, span, "span" end
-    if core.reworks(value, text) then return el, value, core.wholeRange(value), "all" end
+    -- An email's signature stays: only the message above it is replaced.
+    local message, range = core.message(value)
+    if core.reworks(message, text) then return el, value, range, "all" end
     info.why = original and "original not found in the box" or "her text doesn't rework the box's text"
     return el, value
   end

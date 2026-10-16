@@ -1450,6 +1450,16 @@ function core.reworks(value, text)
   return words >= 4 and kept / words >= 0.5
 end
 
+-- What in `value` (a box's text) is the message, without an email signature: the text before a
+-- "--" line, trailing blank lines dropped. The whole of `value` when it has no signature. Returns
+-- the message and its Accessibility range.
+function core.message(value)
+  local cut = value:find("\n%-%-[ \t\194\160]*\n") or value:find("\n%-%-[ \t\194\160]*$")
+  if not cut then return value, core.wholeRange(value) end
+  local body = value:sub(1, cut - 1):gsub("[%s\194\160]+$", "")
+  return body, core.wholeRange(body)
+end
+
 -- The whole of `value` as an Accessibility range.
 function core.wholeRange(value)
   local n = 0

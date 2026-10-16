@@ -829,6 +829,15 @@ describe("screen questions", function()
       assert.is_false(core.reworks(nil, "x"))
     end)
 
+    it("keeps an email signature out of the message", function()
+      local box = "hi dana thanks\nlets do a call after\n\n-- \n\nSam Rivera\nAcme\n\u{A0}\n"
+      local body, range = core.message(box)
+      assert.are.equal("hi dana thanks\nlets do a call after", body)
+      assert.are.same({ location = 0, length = 35 }, range)
+      assert.are.same({ "x", { location = 0, length = 1 } }, { core.message("x\n--") })
+      assert.are.same({ "a -- b", { location = 0, length = 6 } }, { core.message("a -- b") })
+    end)
+
     it("covers the whole box in UTF-16 units", function()
       assert.are.same({ location = 0, length = 4 }, core.wholeRange("\u{1F600}ab"))
     end)
