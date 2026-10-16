@@ -666,5 +666,61 @@
   "kind": "answer",
   "kind_any": true,
   "asked": false
+ },
+ {
+  "screen": "reply",
+  "question": "Check for grammatical errors in this email reply. And",
+  "kind": "insert",
+  "asked": true,
+  "replaces": [
+   "we have a investor day"
+  ],
+  "include": [
+   [
+    "an investor day"
+   ],
+   [
+    "go.acme.run"
+   ]
+  ],
+  "exclude": [
+   "a investor"
+  ]
+ },
+ {
+  "screen": "reply",
+  "question": "Based on the content that I mentioned here, write a a... Write an email to Dana. Structure the content, mention all the points that I have mentioned. And write them properly.",
+  "kind": "insert",
+  "replaces": [
+   "we have a investor day"
+  ],
+  "include": [
+   [
+    "Dana"
+   ],
+   [
+    "21"
+   ],
+   [
+    "30"
+   ],
+   [
+    "go.acme.run"
+   ]
+  ]
+ },
+ {
+  "screen": "reply",
+  "question": "Fix this reply and make it sound more professional.",
+  "kind": "insert",
+  "asked": true,
+  "replaces": [
+   "we have a investor day"
+  ],
+  "include": [
+   [
+    "go.acme.run"
+   ]
+  ]
  }
 ]

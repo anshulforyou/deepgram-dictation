@@ -506,6 +506,7 @@ core.SCREEN_SCHEMA = {
     text = { type = "string" },
     asked = { type = "boolean" },    -- they told her outright to do it: a fill or work starts without asking
     replaces = { type = "string" },  -- for insert: the text on screen it replaces, exactly, else ""
+    gist = { type = "string" },      -- for answer: the whole answer in one short line, shown bold on top
     fields = {
       type = "array",
       items = {
@@ -534,7 +535,7 @@ core.SCREEN_SCHEMA = {
       additionalProperties = false,
     },
   },
-  required = { "kind", "text", "asked", "replaces", "fields", "task" },
+  required = { "kind", "text", "gist", "asked", "replaces", "fields", "task" },
   additionalProperties = false,
 }
 
@@ -676,7 +677,9 @@ function core.parseScreenAnswer(resp, decode, images)
       and type(value.text) == "string" and value.text:match("%S") then
     local replaces = value.kind == "insert" and type(value.replaces) == "string"
       and value.replaces:match("^%s*(.-)%s*$") or ""
-    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil }
+    local gist = value.kind == "answer" and type(value.gist) == "string" and value.gist:match("^%s*(.-)%s*$") or ""
+    return { kind = value.kind, text = value.text:match("^%s*(.-)%s*$"), replaces = replaces ~= "" and replaces or nil,
+             gist = gist ~= "" and gist or nil }
   end
   return { kind = "answer", text = raw }
 end
@@ -1428,5 +1431,102 @@ function core.taskReport(state, lastText)
   return type(state) == "table" and type(state.detail) == "string" and state.detail or ""
 end
 
+
+-- Whether `text` (what grandma wrote) is a reworking of `value` (what is already in the box the
+-- user is typing in): most of the box's words of four letters or more are in it. Then her text
+-- replaces the box's instead of landing next to it.
+function core.reworks(value, text)
+  if type(value) ~= "string" or type(text) ~= "string" then return false end
+  local have = {}
+  for w in text:lower():gmatch("[%w']+") do have[w] = true end
+  local words, kept, seen = 0, 0, {}
+  for w in value:lower():gmatch("[%w']+") do
+    if #w >= 4 and not seen[w] then
+      seen[w] = true
+      words = words + 1
+      if have[w] then kept = kept + 1 end
+    end
+  end
+  return words >= 4 and kept / words >= 0.5
+end
+
+-- What in `value` (a box's text) is the message, without an email signature: the text before a
+-- "--" line, trailing blank lines dropped. The whole of `value` when it has no signature. Returns
+-- the message and its Accessibility range.
+function core.message(value)
+  local cut = value:find("\n%-%-[ \t\194\160]*\n") or value:find("\n%-%-[ \t\194\160]*$")
+  if not cut then return value, core.wholeRange(value) end
+  local body = value:sub(1, cut - 1):gsub("[%s\194\160]+$", "")
+  return body, core.wholeRange(body)
+end
+
+-- The part of `value` an Accessibility range covers.
+function core.rangeText(value, range)
+  local out, at = {}, 0
+  for _, cp in utf8.codes(value) do
+    if at >= range.location and at < range.location + range.length then table.insert(out, utf8.char(cp)) end
+    at = at + (cp > 0xFFFF and 2 or 1)
+  end
+  return table.concat(out)
+end
+
+-- How far selected text `got` is from `want`, ignoring whitespace (browsers count line breaks their
+-- own way): 0 when it matches, a negative count of missing characters when `got` stops short of
+-- it, nil when it is something else.
+function core.selectionGap(got, want)
+  local function squeeze(t) return (tostring(t or ""):gsub("[%s\194\160]", "")) end
+  got, want = squeeze(got), squeeze(want)
+  if got == want then return 0 end
+  if want:sub(1, #got) == got then return -utf8.len(want:sub(#got + 1)) end
+  return nil
+end
+
+-- The whole of `value` as an Accessibility range.
+function core.wholeRange(value)
+  local n = 0
+  for _, cp in utf8.codes(value) do n = n + (cp > 0xFFFF and 2 or 1) end
+  return { location = 0, length = n }
+end
+
+-- Text grandma marked for skimming, "**key words**", as runs { { text, hi } } plus the text with
+-- the marks taken out (what gets copied). A "**" with no partner stays as it is.
+function core.highlightRuns(text)
+  text = tostring(text or "")
+  local marks, from = {}, 1
+  while true do
+    local a = text:find("**", from, true)
+    if not a then break end
+    table.insert(marks, a)
+    from = a + 2
+  end
+  if #marks % 2 == 1 then table.remove(marks) end
+  local runs, pos = {}, 1
+  for i = 1, #marks, 2 do
+    local a, b = marks[i], marks[i + 1]
+    if a > pos then table.insert(runs, { text = text:sub(pos, a - 1), hi = false }) end
+    if b > a + 2 then table.insert(runs, { text = text:sub(a + 2, b - 1), hi = true }) end
+    pos = b + 2
+  end
+  if pos <= #text then table.insert(runs, { text = text:sub(pos), hi = false }) end
+  local plain = {}
+  for _, r in ipairs(runs) do table.insert(plain, r.text) end
+  return runs, table.concat(plain)
+end
+
+-- `text` with grandma's "**" marks taken out.
+function core.unmark(text) return select(2, core.highlightRuns(text)) end
+
+-- The panel's one-line gist after a fill or a page edit: what was done, and what was left.
+function core.fillGist(fields, status)
+  local done, left = 0, 0
+  for _, f in ipairs(fields or {}) do
+    if f.skip then left = left + 1 else done = done + 1 end
+  end
+  local verb = status == "work" and "Changed" or "Filled"
+  local noun = status == "work" and "part" or "field"
+  local out = string.format("%s %d %s%s", verb, done, noun, done == 1 and "" or "s")
+  if left > 0 then out = out .. string.format(", %d left empty", left) end
+  return out .. ". Check it, then save."
+end
 
 return core

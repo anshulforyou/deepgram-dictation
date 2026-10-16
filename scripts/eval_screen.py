@@ -46,6 +46,7 @@ SCHEMA = {  # same as core.SCREEN_SCHEMA
     "properties": {
         "kind": {"type": "string", "enum": ["insert", "answer", "fill", "task", "work"]},
         "text": {"type": "string"},
+        "gist": {"type": "string"},
         "asked": {"type": "boolean"},
         "replaces": {"type": "string"},
         "fields": {"type": "array", "items": {
@@ -58,7 +59,7 @@ SCHEMA = {  # same as core.SCREEN_SCHEMA
             "memory": {"type": "string"}, "edits": {"type": "boolean"}, "minutes": {"type": "integer"}},
             "required": ["title", "goal", "target", "memory", "edits", "minutes"], "additionalProperties": False},
     },
-    "required": ["kind", "text", "asked", "replaces", "fields", "task"],
+    "required": ["kind", "text", "gist", "asked", "replaces", "fields", "task"],
     "additionalProperties": False,
 }
 
@@ -195,7 +196,9 @@ def parse_answer(resp, images=()):
         return "task", "\n".join(f"{k}: {task.get(k)}" for k in ("title", "goal", "target", "memory", "edits",
                                                                     "minutes"))
     if value.get("kind") in ("insert", "answer") and isinstance(value.get("text"), str) and value["text"].strip():
-        return value["kind"], value["text"].strip()
+        text = value["text"].strip()
+        # An answer's "**" marks are taken out for the panel's copy, like core.unmark; an insert is pasted as is.
+        return value["kind"], text.replace("**", "") if value["kind"] == "answer" else text
     return "answer", raw
 
 
@@ -206,7 +209,10 @@ def extras(resp):
         value = json.loads(raw)
     except ValueError:
         return {}
-    return {k: value.get(k) for k in ("asked", "replaces")} if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    marks = str(value.get("text") or "").count("**") // 2
+    return {"asked": value.get("asked"), "replaces": value.get("replaces"), "gist": value.get("gist"), "marks": marks}
 
 
 def grade(case, kind, text, used=None, more=None):
@@ -217,6 +223,14 @@ def grade(case, kind, text, used=None, more=None):
     more = more or {}
     if "asked" in case and more.get("asked") is not case["asked"]:
         problems.append(f"asked is {more.get('asked')}, expected {case['asked']}")
+    if kind == "answer" and more:
+        if not 1 <= more.get("marks", 0) <= 8:
+            problems.append(f"{more.get('marks')} marked phrases, expected 1 to 8")
+        gist = str(more.get("gist") or "")
+        if not gist.strip() or len(gist.split()) > 16:
+            problems.append(f"gist {gist!r}, expected one short line")
+    if kind == "insert" and more and more.get("marks"):
+        problems.append("text to paste has ** marks")
     if "replaces" in case and not any(o.lower() in str(more.get("replaces") or "").lower() for o in case["replaces"]):
         problems.append(f"replaces is {more.get('replaces')!r}, expected it to hold {case['replaces']}")
     if "memory" in case and used is not None and sorted(set(used)) != sorted(case["memory"]):

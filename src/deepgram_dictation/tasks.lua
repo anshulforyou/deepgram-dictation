@@ -129,7 +129,9 @@ function M.show(id)
   local hint = (t.state == "working") and "Still working. Return opens it in Terminal."
     or "Hold Fn+Control to reply. Return opens it in Terminal."
   awaiting = t.state ~= "working" and id or nil
-  overlay.showPanel(t.title .. "\n\n" .. (text ~= "" and text or "Nothing yet.") .. "\n\n" .. hint,
+  local gist = t.state == "blocked" and (state.needs or state.detail) or state.detail
+  overlay.showPanel({ gist = gist or t.title,
+                      body = t.title .. "\n\n" .. (text ~= "" and text or "Nothing yet.") .. "\n\n" .. hint },
     NOTE[t.state] or t.state, t.state == "failed", {
       onReturn = function() awaiting = nil attach(id) end,
       onEscape = function() if awaiting == id then awaiting = nil end end,
@@ -142,7 +144,7 @@ local function notify(t, event, state)
   sounds.play(({ blocked = "ask", done = "done", failed = "error" })[event])
   local body = event == "blocked" and (state.needs or state.detail) or state.detail
   hs.notify.new(function() M.show(t.id) end, {
-    title = title, subTitle = t.title, informativeText = tostring(body or ""), withdrawAfter = 0,
+    title = title, subTitle = t.title, informativeText = core.unmark(body or ""), withdrawAfter = 0,
   }):send()
 end
 

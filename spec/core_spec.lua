@@ -815,6 +815,65 @@ describe("screen questions", function()
     end)
   end)
 
+  describe("reworks", function()
+    local notes = "we have a investor day on 21st nov dana. we need show reservation numbers there. "
+      .. "also we have change the subdomain to go.acme.run from club.acme.run"
+    it("knows her text is the box's notes written properly", function()
+      assert.is_true(core.reworks(notes, "Hi Dana,\n\nWe have an investor day on 21st Nov and need to show "
+        .. "reservation numbers there. We have also changed the subdomain from club.acme.run to go.acme.run."))
+    end)
+
+    it("leaves a box alone when her text is something else, or the box is near empty", function()
+      assert.is_false(core.reworks(notes, "Thanks Dana, Thursday works for me. Talk soon."))
+      assert.is_false(core.reworks("Best, Sam", "Best, Sam and a long reply"))
+      assert.is_false(core.reworks(nil, "x"))
+    end)
+
+    it("keeps an email signature out of the message", function()
+      local box = "hi dana thanks\nlets do a call after\n\n-- \n\nSam Rivera\nAcme\n\u{A0}\n"
+      local body, range = core.message(box)
+      assert.are.equal("hi dana thanks\nlets do a call after", body)
+      assert.are.same({ location = 0, length = 35 }, range)
+      assert.are.same({ "x", { location = 0, length = 1 } }, { core.message("x\n--") })
+      assert.are.same({ "a -- b", { location = 0, length = 6 } }, { core.message("a -- b") })
+    end)
+
+    it("reads the text a range covers and how far a selection is from it", function()
+      assert.are.equal("b\u{1F600}c", core.rangeText("a b\u{1F600}c d", { location = 2, length = 4 }))
+      assert.are.equal(0, core.selectionGap("hi\nthere", "hi\n\nthere "))
+      assert.are.equal(-3, core.selectionGap("hi th", "hi there"))
+      assert.is_nil(core.selectionGap("hi there and more", "hi there"))
+      assert.is_nil(core.selectionGap("other", "hi there"))
+    end)
+
+    it("covers the whole box in UTF-16 units", function()
+      assert.are.same({ location = 0, length = 4 }, core.wholeRange("\u{1F600}ab"))
+    end)
+  end)
+
+  describe("highlightRuns", function()
+    it("splits marked words from the rest and gives the text without marks", function()
+      local runs, plain = core.highlightRuns("I **can't find a link** here. Click **Reply**.")
+      assert.are.same({ { text = "I ", hi = false }, { text = "can't find a link", hi = true },
+                        { text = " here. Click ", hi = false }, { text = "Reply", hi = true },
+                        { text = ".", hi = false } }, runs)
+      assert.are.equal("I can't find a link here. Click Reply.", plain)
+    end)
+
+    it("leaves text with no marks, or a lone mark, alone", function()
+      assert.are.same({ { text = "plain", hi = false } }, (core.highlightRuns("plain")))
+      assert.are.equal("a ** b", core.unmark("a ** b"))
+      assert.are.equal("", core.unmark(nil))
+      assert.are.equal("ab", core.unmark("a****b"))
+    end)
+
+    it("writes the gist after a fill or a page edit", function()
+      local fields = { { skip = false }, { skip = true }, { skip = true } }
+      assert.are.equal("Filled 1 field, 2 left empty. Check it, then save.", core.fillGist(fields))
+      assert.are.equal("Changed 2 parts. Check it, then save.", core.fillGist({ {}, {} }, "work"))
+    end)
+  end)
+
   describe("findSpan", function()
     local para = "Hello team.\n\nThe program is not structured at all. I have to go back and forth.\n\nThanks"
 

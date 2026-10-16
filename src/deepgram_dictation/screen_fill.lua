@@ -205,24 +205,109 @@ end
 
 local KEY_NAMES = { backspace = "delete", delete = "forwarddelete" }
 
--- Selects `original` (text read off the screen) in the focused text field, so a paste replaces it
--- instead of landing next to it. `done(true)` once it is selected; `done(false)` when the field
--- doesn't show its text or the text isn't in it, and nothing is selected then.
-function M.selectText(original, done)
-  local function try()
+-- Selects `span` (an Accessibility range) in the focused box `el` holding `value`, with the keyboard:
+-- Brave ignores selection set through Accessibility (it says yes and nothing moves). The whole box
+-- is Cmd+A; part of it is Cmd+Up to its start, then arrows. `done(true)` once the selection is
+-- that text, `done(false, got)` with the range it last read.
+-- Cmd+A in a focused box selects only that box, so any selection from its start counts. Gmail's
+-- compose box counts line breaks its own way (206 characters of text read back as 197 selected), so
+-- an exact range check left his replies on the clipboard (2026-10-16). Part of a box is checked by
+-- the selected text instead, whitespace aside, and widened when the arrows stopped short.
+local function selectSpan(el, value, span, done)
+  local whole = core.wholeRange(value)
+  local lead = #value:match("^%s*")
+  local trail = #value:match("%s*$")
+  local all = span.location <= lead and span.location + span.length >= whole.length - trail
+  local want = core.rangeText(value, span)
+  if all then
+    hs.eventtap.keyStroke({ "cmd" }, "a", 0)
+  else
+    hs.eventtap.keyStroke({ "cmd" }, "up", 0)
+    for _ = 1, span.location do hs.eventtap.keyStroke({}, "right", 0) end
+    for _ = 1, span.length do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
+  end
+  -- The arrows are queued events: read only once the selection has stopped moving, or widening
+  -- would count presses still on their way (it overshot in Gmail).
+  local tries, last = 0, nil
+  local function check()
+    tries = tries + 1
+    local now = attr(el, "AXSelectedTextRange")
+    local seen = type(now) == "table" and type(now.length) == "number"
+    local moving = seen and (not last or last.location ~= now.location or last.length ~= now.length)
+    last = seen and now or nil
+    local ok, gap = false, nil
+    if seen and not moving then
+      if all then
+        ok = now.location <= lead and now.length > 0
+      else
+        gap = core.selectionGap(attr(el, "AXSelectedText"), want)
+        ok = gap == 0
+      end
+    end
+    if ok or tries >= 20 or (seen and not moving and not (gap and gap < 0)) then
+      return done(ok, seen and { location = now.location, length = now.length } or nil)
+    end
+    if gap and gap < 0 then
+      for _ = 1, -gap do hs.eventtap.keyStroke({ "shift" }, "right", 0) end
+      last = nil
+    end
+    hs.timer.doAfter(0.15, check)
+  end
+  hs.timer.doAfter(0.15, check)
+end
+
+-- Gets the box the user is typing in ready for grandma's `text`: selects `original` (text she read
+-- off the screen and is replacing) when it is in there, or else the box's whole text when `text`
+-- is a reworking of it (core.reworks), so the paste replaces it instead of landing next to it.
+-- `done(how, info)`: how is "span", "all", or nil when nothing was selected; info says what was
+-- found ({ role, chars, why }) so a miss can be read from the dictation record.
+local EXPOSE_POLL, EXPOSE_LIMIT = 0.3, 3
+-- Timers waiting on a page to show its fields, kept so they aren't collected.
+local polling = {} -- luacheck: ignore 241
+function M.selectForPaste(original, text, done)
+  local info = {}
+  -- The box when it shows text: el, value, span or nil, how.
+  local function look()
     local el = focused()
     local value = el and attr(el, "AXValue")
-    local span = core.findSpan(value, original)
-    if not span then return false end
-    local ok = pcall(function() el:setAttributeValue("AXSelectedTextRange", span) end)
-    local now = ok and attr(el, "AXSelectedTextRange")
-    return type(now) == "table" and now.location == span.location and now.length == span.length
+    info.role = el and attr(el, "AXRole") or "none"
+    info.chars = type(value) == "string" and #value or 0
+    if type(value) ~= "string" or value == "" then info.why = "no text in the focused element" return nil end
+    local span = original and core.findSpan(value, original)
+    if span then return el, value, span, "span" end
+    -- An email's signature stays: only the message above it is replaced.
+    local message, range = core.message(value)
+    if core.reworks(message, text) then return el, value, range, "all" end
+    info.why = original and "original not found in the box" or "her text doesn't rework the box's text"
+    return el, value
   end
-  if try() then return done(true) end
+  local function go(el, value, span, how)
+    if not span then return done(nil, info) end
+    selectSpan(el, value, span, function(ok, got)
+      info.wanted, info.got = how, got
+      if not ok then info.why = "the selection didn't land" end
+      done(ok and how or nil, info)
+    end)
+  end
+  local el, value, span, how = look()
+  if el then return go(el, value, span, how) end
+  if info.role == "AXTextArea" or info.role == "AXTextField" then return done(nil, info) end -- an empty box
+  -- Maybe the page isn't shown to Accessibility yet: ask, then look again until it is.
   local app = hs.application.frontmostApplication()
-  local wait = app and exposePage(app) or 0
-  if wait == 0 then return done(false) end
-  hs.timer.doAfter(wait, function() done(try()) end)
+  if not app or exposePage(app) == 0 then return done(nil, info) end
+  local waited = 0
+  local timer
+  timer = hs.timer.doEvery(EXPOSE_POLL, function()
+    waited = waited + EXPOSE_POLL
+    local e, v, sp, h = look()
+    if e or waited >= EXPOSE_LIMIT or info.role == "AXTextArea" or info.role == "AXTextField" then
+      timer:stop()
+      polling[timer] = nil
+      if e then return go(e, v, sp, h) end
+      done(nil, info)
+    end
+  end)
+  polling[timer] = true
 end
 
 -- Fills `fields` ({ { label, value, skip } }, as confirmed) on `scr`. `progress(n)` is called before
