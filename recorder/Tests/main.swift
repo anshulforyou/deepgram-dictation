@@ -25,6 +25,23 @@ func withSamples<R>(_ values: [Float], _ body: (UnsafeBufferPointer<Float>) -> R
     values.withUnsafeBufferPointer(body)
 }
 
+// MARK: MicBridge
+
+test("bridge sends the built-in mic until the Bluetooth mic is live, then only the Bluetooth mic") {
+    var bridge = MicBridge()
+    expect(bridge.sendBridge, "bridge audio goes out at first")
+    expect(!bridge.sendMain(alive: false), "a silent main buffer is dropped")
+    expect(bridge.sendBridge, "still bridging")
+    expect(bridge.sendMain(alive: true), "the first live main buffer goes out")
+    expect(!bridge.sendBridge, "bridge stops after the handover")
+    expect(bridge.sendMain(alive: false), "after the handover even quiet main audio goes out")
+}
+
+test("a mic is alive once it sends anything but digital zeros") {
+    expect(!withSamples([0, 0, 0]) { MicBridge.alive($0) }, "zeros")
+    expect(withSamples([0, 0.0001, 0]) { MicBridge.alive($0) }, "room noise")
+}
+
 // MARK: PauseClock
 
 test("pause clock adds up completed pauses") {

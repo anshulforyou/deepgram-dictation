@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `bridgeBluetoothMic`: with AirPods, the first words of a dictation are no longer lost while
+  they switch into call mode (1 to 3 s). The built-in mic covers that start-up, and the AirPods
+  take over once they send audio. Each dictation records when that happened (`handoverMs`).
 - Background tasks: "review this PR", said with Fn+Control, starts a Claude Code background
   session with your grandma memory. It reports back in a notification when it's done or needs
   you, and you reply with Fn+Control while its answer is open. It's read-only unless you confirm a
@@ -15,7 +18,6 @@ All notable changes to this project are documented here. The format follows
 - Working on a page on screen: grandma looks through a page in its editor, proposes every change
   from memory, and once you confirm, makes them and saves a draft. She never publishes, sends,
   pays or deletes. `make test-work` checks it.
-
 - Filing into [grandma](https://github.com/anshulforyou/grandma): with `grandmaHome`, meetings go
   to the matching sweater's `meetings/` folder with an index and an INDEX.md pointer, and each one
   gets a memory proposal for `grandma review`.

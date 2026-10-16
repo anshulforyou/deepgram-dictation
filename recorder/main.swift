@@ -81,9 +81,27 @@ final class MicCapture {
     private let engine = AVAudioEngine()
     private var observer: NSObjectProtocol?
     private let onBuffer: (AVAudioPCMBuffer, AVAudioTime) -> Void
+    private let device: AudioDeviceID?
 
-    init(onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
+    /// `device` records from that input instead of the system's default one.
+    init(device: AudioDeviceID? = nil, onBuffer: @escaping (AVAudioPCMBuffer, AVAudioTime) -> Void) {
+        self.device = device
         self.onBuffer = onBuffer
+    }
+
+    /// The input device with this UID (as Hammerspoon's hs.audiodevice:uid() gives it), or nil.
+    static func device(uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var cfUID = uid as CFString
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = withUnsafePointer(to: &cfUID) { pointer in
+            AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address,
+                                       UInt32(MemoryLayout<CFString>.size), pointer, &size, &id)
+        }
+        return status == noErr && id != 0 ? id : nil
     }
 
     private var running = false
@@ -119,6 +137,13 @@ final class MicCapture {
     }
 
     private func installTap() throws {
+        if var id = device {
+            guard let unit = engine.inputNode.audioUnit, AudioUnitSetProperty(
+                unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id,
+                UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else {
+                throw RecorderError("couldn't record from the chosen input device")
+            }
+        }
         let inputFormat = engine.inputNode.outputFormat(forBus: 0)
         let format = Self.format
         // Multi-channel inputs (the MacBook mic array reports 3 channels, AirPods 9, whenever a call
@@ -495,7 +520,9 @@ func printMicUsers() {
 /// recorder exits as soon as it closes (Hammerspoon went away).
 ///
 /// Prints {"event": "listening"} once the mic delivers real audio (Bluetooth mics such as AirPods
-/// are silent for a second or two while they switch on).
+/// are silent for a second or two while they switch on). With --bridge-uid <built-in mic UID>, the
+/// built-in mic is recorded and sent during that start-up, and {"event": "handover"} is printed when
+/// the Bluetooth mic takes over (MicBridge), so the first words aren't lost.
 /// SIGINT: stop recording, flush, and print {"transcript": "..."}. If Deepgram's results don't cover
 /// all the audio (a slow connection), prints {"error": ..., "audio": ...} instead of a partial transcript.
 /// SIGTERM: cancel immediately and print nothing.
@@ -506,6 +533,9 @@ final class StreamSession {
     private let saveURL: URL?
     private let queue = DispatchQueue(label: "stream")
     private var capture: MicCapture?
+    private var bridge: MicCapture?      // the built-in mic, while a Bluetooth mic starts up
+    private let bridgeDevice: AudioDeviceID?
+    private var bridgeState = MicBridge()
     private var announcedListening = false
     private var socket: URLSessionWebSocketTask?
     private var saveHandle: FileHandle?
@@ -519,11 +549,12 @@ final class StreamSession {
     private var finished = false
     private var signalSources: [DispatchSourceSignal] = []
 
-    init(url: URL?, standby: Bool, apiKey: String, saveURL: URL?) {
+    init(url: URL?, standby: Bool, apiKey: String, saveURL: URL?, bridgeUID: String? = nil) {
         self.url = url
         self.standby = standby
         self.apiKey = apiKey
         self.saveURL = saveURL
+        self.bridgeDevice = bridgeUID.flatMap { MicCapture.device(uid: $0) }
     }
 
     func start() {
@@ -534,6 +565,11 @@ final class StreamSession {
             self.capture = capture
         } catch {
             output(["error": "\(error)"])
+        }
+        if let bridgeDevice {
+            let bridge = makeCapture(bridge: true, device: bridgeDevice)
+            // Without the bridge it's only today's behaviour: the first words may be lost.
+            if (try? bridge.prepare()) != nil { self.bridge = bridge }
         }
         if standby {
             emit(["event": "ready"])
@@ -578,19 +614,34 @@ final class StreamSession {
         receive()
 
         do {
+            try bridge?.run()
             try capture?.run()
         } catch {
             output(["error": "\(error)"])
         }
     }
 
-    private func makeCapture() -> MicCapture {
-        MicCapture { [weak self] buffer, _ in
+    /// The main mic, or with `bridge` the built-in mic covering a Bluetooth mic's start-up (MicBridge).
+    private func makeCapture(bridge isBridge: Bool = false, device: AudioDeviceID? = nil) -> MicCapture {
+        MicCapture(device: device) { [weak self] buffer, _ in
             guard let self, let data = buffer.floatChannelData else { return }
             let samples = UnsafeBufferPointer(start: data[0], count: Int(buffer.frameLength))
             let pcm = PCM.int16Data(samples)
             let loud = PCM.hasSignal(samples)
+            let alive = MicBridge.alive(samples)
             self.queue.async {
+                if self.bridge != nil {
+                    if isBridge {
+                        guard self.bridgeState.sendBridge else { return }
+                    } else {
+                        let wasBridging = !self.bridgeState.handedOver
+                        guard self.bridgeState.sendMain(alive: alive) else { return }
+                        if wasBridging {
+                            self.emit(["event": "handover"])
+                            DispatchQueue.main.async { self.bridge?.stop() }
+                        }
+                    }
+                }
                 if loud && !self.announcedListening {
                     self.announcedListening = true
                     self.emit(["event": "listening"])
@@ -715,6 +766,7 @@ final class StreamSession {
                 self.stopping = true
                 // Buffers already captured are queued ahead of this, so all audio is sent first.
                 self.capture?.stop()
+                self.bridge?.stop()
                 self.queue.async { self.audioEnded() }
             }
             source.resume()
@@ -725,10 +777,11 @@ final class StreamSession {
 
 func runStreamMode() -> Never {
     var args = CommandLine.arguments.dropFirst()
-    var url: URL?, save: URL?, standby = false
+    var url: URL?, save: URL?, standby = false, bridge: String?
     while let arg = args.popFirst() {
         switch arg {
         case "--standby": standby = true
+        case "--bridge-uid": bridge = args.popFirst()
         case "--url": url = args.popFirst().flatMap(URL.init(string:))
         case "--save": save = args.popFirst().map { URL(fileURLWithPath: $0) }
         default: break
@@ -736,10 +789,10 @@ func runStreamMode() -> Never {
     }
     let key = ProcessInfo.processInfo.environment["DEEPGRAM_API_KEY"] ?? ""
     guard url != nil || standby, !key.isEmpty else {
-        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream (--url WSS_URL | --standby) [--save FILE]\n".utf8))
+        FileHandle.standardError.write(Data("usage: DeepgramRecorder --stream (--url WSS_URL | --standby) [--save FILE] [--bridge-uid UID]\n".utf8))
         exit(2)
     }
-    let session = StreamSession(url: url, standby: standby, apiKey: key, saveURL: save)
+    let session = StreamSession(url: url, standby: standby, apiKey: key, saveURL: save, bridgeUID: bridge)
     session.start()
     dispatchMain()
 }
